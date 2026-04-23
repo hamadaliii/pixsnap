@@ -85,25 +85,39 @@ export default function AdminPage() {
     setUploadTotal(acceptedFiles.length); setUploadDone(0); setUploadProgress(0)
     let done = 0
     const newPhotos: Photo[] = []
+
     async function uploadFile(file: File) {
       try {
-        const ext = file.name.split('.').pop()?.toLowerCase() ?? 'jpg'
-        const fileName = `${event!.id}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`
-        const { error: storageError } = await supabase.storage.from('event-photos').upload(fileName, file)
+        // Convert HEIC to JPEG client-side before upload for proper display
+        let uploadFile = file
+        const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
+        const storageExt = (ext === 'heic' || ext === 'heif') ? 'jpg' : ext
+        const fileName = `${event!.id}/${Date.now()}-${Math.random().toString(36).slice(2)}.${storageExt}`
+
+        const { error: storageError } = await supabase.storage.from('event-photos').upload(fileName, uploadFile)
         if (storageError) throw new Error(storageError.message)
         const { data: { publicUrl } } = supabase.storage.from('event-photos').getPublicUrl(fileName)
         const { data: photoRecord, error: dbError } = await supabase.from('photos')
           .insert({ event_id: event!.id, storage_path: fileName, public_url: publicUrl, processed: false })
           .select().single()
         if (dbError) throw new Error(dbError.message)
+
+        // Auto-call embed (generates watermark + indexes faces)
         fetch(`${API_URL}/embed`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ photo_id: photoRecord.id, photo_url: publicUrl, event_id: event!.id, watermark_text: watermarkEnabled ? watermarkText : '' }),
+          body: JSON.stringify({
+            photo_id: photoRecord.id,
+            photo_url: publicUrl,
+            event_id: event!.id,
+            watermark_text: watermarkEnabled ? watermarkText : ''
+          }),
         }).catch(console.error)
+
         newPhotos.push(photoRecord)
-      } catch (err) { console.error(`Fel: ${(err as Error).message}`) }
+      } catch (err) { console.error(`Fel vid uppladdning: ${(err as Error).message}`) }
       finally { done++; setUploadDone(done); setUploadProgress(Math.round((done / acceptedFiles.length) * 100)) }
     }
+
     for (let i = 0; i < acceptedFiles.length; i += PARALLEL) {
       await Promise.all(acceptedFiles.slice(i, i + PARALLEL).map(uploadFile))
     }
@@ -112,7 +126,9 @@ export default function AdminPage() {
   }, [event, supabase, watermarkText, watermarkEnabled])
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
-    onDrop, accept: { 'image/*': ['.jpg', '.jpeg', '.png', '.webp', '.heic'] }, multiple: true,
+    onDrop,
+    accept: { 'image/*': ['.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif'] },
+    multiple: true,
   })
 
   async function handleDelete(photo: Photo) {
@@ -122,12 +138,24 @@ export default function AdminPage() {
     setPhotos(prev => prev.filter(p => p.id !== photo.id))
   }
 
-  async function handlePublish() {
+  /** Publish and notify. forceResend=true allows sending again even if already sent */
+  async function handlePublish(forceResend = false) {
     if (!event || !userId) return
-    if (!confirm('Skicka notifikationer till alla registrerade gäster?')) return
+    const msg = forceResend
+      ? 'Skicka notifikationer IGEN till alla registrerade gäster?'
+      : 'Skicka notifikationer till alla registrerade gäster?'
+    if (!confirm(msg)) return
     setPublishing(true)
     try {
-      const res = await fetch(`${API_URL}/publish`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ event_id: event.id, user_id: userId }) })
+      // If forcing resend, first reset notification_sent flag
+      if (forceResend) {
+        await supabase.from('events').update({ notification_sent: false }).eq('id', event.id)
+      }
+      const res = await fetch(`${API_URL}/publish`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ event_id: event.id, user_id: userId })
+      })
       const data = await res.json()
       setPublishDone(true)
       alert(`✅ ${data.message}`)
@@ -191,7 +219,7 @@ export default function AdminPage() {
   return (
     <div className="min-h-screen bg-neutral-50">
       <Navbar />
-      <main className="max-w-5xl mx-auto px-5 py-10">
+      <main className="max-w-5xl mx-auto px-4 sm:px-5 py-8 sm:py-10">
         {/* Breadcrumb */}
         <div className="flex items-center gap-2 text-xs text-neutral-400 mb-6">
           <Link href="/dashboard" className="hover:text-neutral-700 transition-colors">Events</Link>
@@ -219,11 +247,20 @@ export default function AdminPage() {
               className="text-sm text-neutral-600 border border-neutral-200 bg-white px-4 py-2 rounded-xl hover:border-neutral-400 transition-colors font-medium">
               Visa publik sida ↗
             </a>
-            <button onClick={handlePublish} disabled={publishing || publishDone}
-              className={`text-sm font-semibold px-4 py-2 rounded-xl transition-colors flex items-center gap-1.5 ${publishDone ? 'bg-neutral-100 text-neutral-400' : 'bg-neutral-900 text-white hover:bg-neutral-700'}`}>
+            {/* Primary publish button */}
+            <button onClick={() => handlePublish(false)} disabled={publishing || publishDone}
+              className={`text-sm font-semibold px-4 py-2 rounded-xl transition-colors flex items-center gap-1.5 ${publishDone ? 'bg-neutral-100 text-neutral-400 cursor-default' : 'bg-neutral-900 text-white hover:bg-neutral-700'}`}>
               {publishing && <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />}
               {publishDone ? '✓ Publicerat' : '🔔 Publicera & notifiera'}
             </button>
+            {/* Resend button — always visible after first publish */}
+            {publishDone && (
+              <button onClick={() => handlePublish(true)} disabled={publishing}
+                className="text-sm font-semibold px-4 py-2 rounded-xl border border-neutral-200 bg-white text-neutral-700 hover:border-neutral-400 transition-colors flex items-center gap-1.5">
+                {publishing && <span className="w-3.5 h-3.5 border-2 border-neutral-300 border-t-neutral-700 rounded-full animate-spin" />}
+                🔁 Skicka igen
+              </button>
+            )}
           </div>
         </div>
 
@@ -266,15 +303,22 @@ export default function AdminPage() {
                 {!paymentEnabled && (
                   <div className="bg-purple-50 border border-purple-100 rounded-xl px-3 py-2">
                     <p className="text-xs font-semibold text-purple-700">🎁 Gratis-läge aktiverat</p>
-                    <p className="text-[10px] text-purple-500 mt-0.5">Gäster laddar ner gratis utan vattenstämpel</p>
+                    <p className="text-[10px] text-purple-500 mt-0.5">Gäster laddar ner gratis</p>
                   </div>
                 )}
                 <div className="bg-neutral-50 border border-neutral-100 rounded-xl px-3 py-2.5 space-y-2">
                   <p className="text-xs font-bold text-neutral-600">Notifikationer</p>
                   {publishDone ? (
-                    <p className="text-xs text-green-600">✓ Skickade</p>
+                    <div className="space-y-1.5">
+                      <p className="text-xs text-green-600">✓ Skickade</p>
+                      <button onClick={() => handlePublish(true)} disabled={publishing}
+                        className="w-full text-neutral-700 border border-neutral-200 text-xs font-bold py-2 rounded-lg hover:bg-neutral-50 transition-colors flex items-center justify-center gap-1.5">
+                        {publishing && <span className="w-3 h-3 border-2 border-neutral-300 border-t-neutral-700 rounded-full animate-spin" />}
+                        🔁 Skicka igen
+                      </button>
+                    </div>
                   ) : (
-                    <button onClick={handlePublish} disabled={publishing}
+                    <button onClick={() => handlePublish(false)} disabled={publishing}
                       className="w-full bg-neutral-900 text-white text-xs font-bold py-2 rounded-lg hover:bg-neutral-700 transition-colors flex items-center justify-center gap-1.5">
                       {publishing && <span className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />}
                       🔔 Publicera & notifiera
@@ -305,6 +349,7 @@ export default function AdminPage() {
                     </div>
                     <p className="text-sm font-bold text-neutral-700 mb-1">{isDragActive ? 'Slapp fotona här!' : 'Ladda upp eventfoton'}</p>
                     <p className="text-xs text-neutral-400">Upp till 1000+ foton · JPG, PNG, WebP, HEIC</p>
+                    <p className="text-xs text-neutral-400 mt-1">Foton indexeras och vattenmärks automatiskt</p>
                   </>
                 )}
               </div>
@@ -331,13 +376,12 @@ export default function AdminPage() {
         {tab === 'settings' && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 max-w-3xl">
 
-            {/* Tillgång & status */}
             <div className="bg-white rounded-2xl border border-neutral-100 p-5 space-y-4">
               <p className="text-xs font-bold uppercase tracking-widest text-neutral-400">Åtkomst</p>
               <Toggle value={isActive} onChange={setIsActive} label="Aktivt event" desc="Gäster kan söka och hitta foton" />
-              <div className="divider" />
+              <div className="h-px bg-neutral-100" />
               <Toggle value={browseAll} onChange={setBrowseAll} label="Visa alla foton" desc="Gäster kan bläddra bland alla bilder" />
-              <div className="divider" />
+              <div className="h-px bg-neutral-100" />
               <div>
                 <label className="label">PIN-skydd (valfritt)</label>
                 <input type="number" value={pinCode} onChange={e => setPinCode(e.target.value)} placeholder="T.ex. 1234" maxLength={8} className="input" />
@@ -348,19 +392,18 @@ export default function AdminPage() {
               </div>
             </div>
 
-            {/* Betalning */}
             <div className="bg-white rounded-2xl border border-neutral-100 p-5 space-y-4">
               <p className="text-xs font-bold uppercase tracking-widest text-neutral-400">Betalning & pris</p>
               <Toggle value={paymentEnabled} onChange={setPaymentEnabled} label="Betalning aktiverat" desc={paymentEnabled ? 'Gäster betalar för full kvalitet' : '🎁 Gratis — alla foton tillgängliga direkt'} />
               {paymentEnabled && (
                 <>
-                  <div className="divider" />
+                  <div className="h-px bg-neutral-100" />
                   <div>
                     <label className="label">Pris per foto: <strong className="text-neutral-900">{pricePerPhoto} kr</strong></label>
                     <input type="range" min={5} max={50} value={pricePerPhoto} onChange={e => setPricePerPhoto(Number(e.target.value))} className="w-full accent-neutral-900 mt-1" />
                     <div className="flex justify-between text-xs text-neutral-400 mt-0.5"><span>5 kr</span><span>50 kr</span></div>
                   </div>
-                  <div className="divider" />
+                  <div className="h-px bg-neutral-100" />
                   <Toggle value={packageEnabled} onChange={setPackageEnabled} label="Paketpris" desc="Köp alla foton för ett fast pris" />
                   {packageEnabled && (
                     <div>
@@ -373,7 +416,6 @@ export default function AdminPage() {
               )}
             </div>
 
-            {/* Vattenstämpel */}
             <div className="bg-white rounded-2xl border border-neutral-100 p-5 space-y-4">
               <p className="text-xs font-bold uppercase tracking-widest text-neutral-400">Vattenstämpel</p>
               <Toggle value={watermarkEnabled} onChange={setWatermarkEnabled} label="Vattenstämpel aktiverad" desc={watermarkEnabled ? 'Visas på gratisnedladdningar' : 'Av — bilder visas utan vattenstämpel'} />
@@ -383,7 +425,6 @@ export default function AdminPage() {
                     <label className="label">Text</label>
                     <input type="text" value={watermarkText} onChange={e => setWatermarkText(e.target.value)} placeholder="PixSnap" className="input" />
                   </div>
-                  {/* Live preview */}
                   <div className="relative aspect-video bg-neutral-100 rounded-xl overflow-hidden">
                     <div className="absolute inset-0">
                       {[0,1,2,3].map(row => [0,1,2].map(col => (
@@ -402,7 +443,6 @@ export default function AdminPage() {
               )}
             </div>
 
-            {/* Fotograf */}
             <div className="bg-white rounded-2xl border border-neutral-100 p-5 space-y-4">
               <p className="text-xs font-bold uppercase tracking-widest text-neutral-400">Fotografens uppgifter</p>
               <div>
@@ -417,7 +457,6 @@ export default function AdminPage() {
               </div>
             </div>
 
-            {/* Save button */}
             <div className="lg:col-span-2">
               <button onClick={saveSettings} disabled={savingSettings}
                 className="w-full bg-neutral-900 text-white text-sm font-bold py-3.5 rounded-xl hover:bg-neutral-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2">
@@ -426,7 +465,6 @@ export default function AdminPage() {
               </button>
             </div>
 
-            {/* Danger zone */}
             <div className="lg:col-span-2 bg-white rounded-2xl border border-red-100 p-5 space-y-3">
               <p className="text-xs font-bold uppercase tracking-widest text-red-400">Farlig zon</p>
               <p className="text-sm text-neutral-500">Raderar eventet, alla foton och AWS-indexet permanent.</p>

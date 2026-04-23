@@ -21,6 +21,12 @@ function saveFavorites(eventId: string, ids: string[]) {
   try { localStorage.setItem(`ps_fav_${eventId}`, JSON.stringify(ids)) } catch {}
 }
 
+/** True if the device is a phone — prefers direct download over zip */
+function isMobile() {
+  if (typeof navigator === 'undefined') return false
+  return /iPhone|iPad|iPod|Android/i.test(navigator.userAgent)
+}
+
 export default function ResultsPage() {
   const { id: eventId } = useParams<{ id: string }>()
   const searchParams = useSearchParams()
@@ -42,13 +48,15 @@ export default function ResultsPage() {
   const [checkoutLoading, setCheckoutLoading] = useState(false)
   const [packageLoading, setPackageLoading] = useState(false)
   const [confettiDone, setConfettiDone] = useState(false)
+  const [mobile, setMobile] = useState(false)
 
   // Tackkort state
   const [showThanksCard, setShowThanksCard] = useState(false)
   const [thanksName, setThanksName] = useState('')
   const [thanksMsg, setThanksMsg] = useState('')
   const [thanksLoading, setThanksLoading] = useState(false)
-  const [thanksCardUrl, setThanksCardUrl] = useState('')
+
+  useEffect(() => { setMobile(isMobile()) }, [])
 
   useEffect(() => {
     async function load() {
@@ -71,7 +79,6 @@ export default function ResultsPage() {
           setAllPhotos(all ?? [])
         }
 
-        // Load saved favorites
         const savedFavs = getFavorites(eventId)
         setFavorites(new Set(savedFavs))
       } catch (e) { console.error(e) }
@@ -124,7 +131,6 @@ export default function ResultsPage() {
   async function generateThanksCard() {
     if (!thanksName.trim()) return
     setThanksLoading(true)
-    const favPhoto = photos.find(p => favorites.has(p.id)) ?? photos[0]
     try {
       const res = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
@@ -166,8 +172,25 @@ export default function ResultsPage() {
   const browseAllEnabled = settings?.browse_all_enabled ?? false
 
   function getPhotoUrl(photo: Photo) {
+    // If payment disabled OR watermark disabled → show original (no watermark)
     if (!paymentEnabled || !watermarkEnabled) return photo.public_url
+    // Otherwise show watermarked version
     return photo.watermark_url ?? photo.public_url
+  }
+
+  /** Download label — shows correct text based on settings */
+  function freeDownloadLabel(): { title: string; sub: string } {
+    if (!paymentEnabled) return { title: 'Ladda ner alla', sub: 'Full kvalitet · Gratis' }
+    if (watermarkEnabled) return { title: 'Ladda ner gratis', sub: 'Med vattenstämpel' }
+    return { title: 'Ladda ner alla', sub: 'Gratis' }
+  }
+
+  /** Free download endpoint */
+  function freeDownloadUrl() {
+    if (!paymentEnabled) {
+      return `${API_URL}/download-free-original?ids=${photos.map(p=>p.id).join(',')}`
+    }
+    return `${API_URL}/download-free?ids=${photos.map(p=>p.id).join(',')}`
   }
 
   const displayPhotos = filterFavs
@@ -185,10 +208,13 @@ export default function ResultsPage() {
     </div>
   )
 
+  const dlLabel = freeDownloadLabel()
+  const showFreeDownload = !paymentEnabled || watermarkEnabled
+
   return (
     <div className="min-h-screen bg-white flex flex-col">
       {/* Topbar */}
-      <div className="h-[52px] border-b border-neutral-100 flex items-center justify-between px-5 sticky top-0 bg-white/95 backdrop-blur z-40">
+      <div className="h-[52px] border-b border-neutral-100 flex items-center justify-between px-4 sticky top-0 bg-white/95 backdrop-blur z-40">
         <Link href="/" className="flex items-center gap-2">
           <div className="w-6 h-6 bg-neutral-900 rounded-lg flex items-center justify-center">
             <svg className="w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -212,7 +238,7 @@ export default function ResultsPage() {
         </div>
       </div>
 
-      <main className="flex-1 max-w-2xl mx-auto w-full px-4 py-8">
+      <main className="flex-1 w-full max-w-2xl mx-auto px-4 py-6">
         {photos.length === 0 ? (
           <div className="text-center py-20">
             <p className="text-4xl mb-4">😕</p>
@@ -223,8 +249,8 @@ export default function ResultsPage() {
         ) : (
           <>
             {/* Header */}
-            <div className="text-center mb-6">
-              <div className="inline-flex items-center gap-2 bg-green-50 border border-green-100 rounded-full px-4 py-1.5 text-xs font-bold text-green-700 mb-3">
+            <div className="text-center mb-5">
+              <div className="inline-flex items-center gap-2 bg-green-50 border border-green-100 rounded-full px-4 py-1.5 text-xs font-bold text-green-700 mb-2">
                 <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
                 Hittade {photos.length} foto{photos.length !== 1 ? 'n' : ''} av dig
               </div>
@@ -284,8 +310,8 @@ export default function ResultsPage() {
               </div>
             )}
 
-            {/* Grid */}
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-8">
+            {/* Grid — full width on mobile, 3 col on desktop */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-6">
               {displayPhotos.map((photo, idx) => {
                 const isSelected = selected.has(photo.id)
                 const isFav = favorites.has(photo.id)
@@ -293,23 +319,28 @@ export default function ResultsPage() {
                   <div key={photo.id}
                     className="relative aspect-square rounded-xl overflow-hidden bg-neutral-100 cursor-pointer group"
                     onClick={() => setLightbox(photo)}>
-                    <Image src={getPhotoUrl(photo)} alt={`Foto ${idx+1}`} fill
+                    <Image
+                      src={getPhotoUrl(photo)}
+                      alt={`Foto ${idx+1}`}
+                      fill
                       className="object-cover transition-transform duration-300 group-hover:scale-[1.03]"
-                      sizes="(max-width:640px) 50vw, 33vw" />
+                      sizes="(max-width:640px) 50vw, 33vw"
+                      unoptimized
+                    />
                     <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors" />
 
                     {/* Favorite button */}
                     <button onClick={e => toggleFavorite(photo.id, e)}
-                      className={`absolute top-2 right-2 w-7 h-7 rounded-full flex items-center justify-center transition-all ${isFav ? 'bg-rose-500 scale-100' : 'bg-black/30 opacity-0 group-hover:opacity-100 scale-90'}`}>
+                      className={`absolute top-2 right-2 w-8 h-8 rounded-full flex items-center justify-center transition-all ${isFav ? 'bg-rose-500 scale-100' : 'bg-black/30 opacity-0 group-hover:opacity-100 scale-90'}`}>
                       <svg className="w-3.5 h-3.5 text-white" viewBox="0 0 24 24" fill={isFav ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth={2}>
                         <path strokeLinecap="round" strokeLinejoin="round" d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
                       </svg>
                     </button>
 
-                    {/* Select button (only if payment enabled) */}
+                    {/* Select button (payment enabled) */}
                     {paymentEnabled && (
                       <button onClick={e => toggleSelect(photo.id, e)}
-                        className={`absolute top-2 left-2 w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all ${isSelected ? 'bg-neutral-900 border-neutral-900 scale-100' : 'bg-black/20 border-white/60 opacity-0 group-hover:opacity-100 scale-90'}`}>
+                        className={`absolute top-2 left-2 w-7 h-7 rounded-full border-2 flex items-center justify-center transition-all ${isSelected ? 'bg-neutral-900 border-neutral-900 scale-100' : 'bg-black/20 border-white/60 opacity-0 group-hover:opacity-100 scale-90'}`}>
                         {isSelected && <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>}
                       </button>
                     )}
@@ -319,26 +350,50 @@ export default function ResultsPage() {
               })}
             </div>
 
-            {/* Download */}
-            {!paymentEnabled ? (
-              <div className="bg-neutral-50 border border-neutral-100 rounded-2xl p-4 mb-3 flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-bold text-neutral-900">Ladda ner alla</p>
-                  <p className="text-xs text-neutral-500 mt-0.5">Full kvalitet · Gratis</p>
+            {/* Download section */}
+            {showFreeDownload && (
+              <div className="bg-neutral-50 border border-neutral-100 rounded-2xl p-4 mb-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-bold text-neutral-900">{dlLabel.title}</p>
+                    <p className="text-xs text-neutral-500 mt-0.5">{dlLabel.sub}</p>
+                  </div>
+                  {/* On mobile: show individual download buttons per photo. On desktop: zip */}
+                  {mobile ? (
+                    <div className="flex flex-col items-end gap-2">
+                      <p className="text-[11px] text-neutral-400">Tryck på ett foto för att ladda ner</p>
+                      <div className="flex flex-wrap gap-1.5 justify-end max-w-[180px]">
+                        {photos.slice(0, 6).map((p, i) => (
+                          <a
+                            key={p.id}
+                            href={!paymentEnabled || !watermarkEnabled ? p.public_url : (p.watermark_url ?? p.public_url)}
+                            download={`pixsnap_foto_${i+1}.jpg`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-[10px] bg-neutral-900 text-white px-2 py-1 rounded-lg font-bold hover:bg-neutral-700 transition-colors"
+                          >
+                            #{i+1}
+                          </a>
+                        ))}
+                        {photos.length > 6 && (
+                          <span className="text-[10px] text-neutral-400 self-center">+{photos.length - 6} till</span>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <a
+                      href={freeDownloadUrl()}
+                      download
+                      className={`text-xs font-bold px-4 py-2 rounded-xl transition-colors flex items-center gap-1.5 ${!paymentEnabled ? 'bg-neutral-900 text-white hover:bg-neutral-700' : 'text-neutral-600 border border-neutral-200 hover:bg-white hover:border-neutral-300'}`}
+                    >
+                      ↓ Zip
+                    </a>
+                  )}
                 </div>
-                <a href={`${API_URL}/download-free?ids=${photos.map(p=>p.id).join(',')}`} download className="bg-neutral-900 text-white text-xs font-bold px-4 py-2 rounded-xl hover:bg-neutral-700 transition-colors">↓ Zip</a>
               </div>
-            ) : watermarkEnabled ? (
-              <div className="bg-neutral-50 border border-neutral-100 rounded-2xl p-4 mb-3 flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-bold text-neutral-900">Ladda ner gratis</p>
-                  <p className="text-xs text-neutral-500 mt-0.5">Med vattenstämpel</p>
-                </div>
-                <a href={`${API_URL}/download-free?ids=${photos.map(p=>p.id).join(',')}`} download className="text-xs text-neutral-600 border border-neutral-200 rounded-xl px-3 py-1.5 hover:bg-white hover:border-neutral-300 transition-all">↓ Zip</a>
-              </div>
-            ) : null}
+            )}
 
-            {/* Email */}
+            {/* Email save link */}
             {!emailSent ? (
               <div className="bg-neutral-50 border border-neutral-100 rounded-2xl p-4">
                 <p className="text-sm font-bold text-neutral-900 mb-0.5">Spara gallerilänken</p>
@@ -369,7 +424,7 @@ export default function ResultsPage() {
         <div className="fixed inset-0 bg-black/92 flex items-center justify-center z-50 p-4" onClick={() => setLightbox(null)}>
           <div className="relative max-w-2xl w-full" onClick={e => e.stopPropagation()}>
             <button onClick={() => setLightbox(null)} className="absolute -top-10 right-0 text-white/50 hover:text-white text-sm">Stäng ✕</button>
-            <Image src={getPhotoUrl(lightbox)} alt="Foto" width={900} height={900} className="w-full rounded-2xl object-contain max-h-[78vh]" />
+            <Image src={getPhotoUrl(lightbox)} alt="Foto" width={900} height={900} className="w-full rounded-2xl object-contain max-h-[78vh]" unoptimized />
             <div className="flex items-center justify-between mt-4">
               <button onClick={() => lightboxIdx > 0 && setLightbox(displayPhotos[lightboxIdx-1])} disabled={lightboxIdx<=0}
                 className="text-white/50 hover:text-white disabled:opacity-20 px-4 py-2 text-sm">← Föregående</button>
@@ -380,6 +435,17 @@ export default function ResultsPage() {
                     <path strokeLinecap="round" strokeLinejoin="round" d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
                   </svg>
                 </button>
+                {/* Direct download in lightbox */}
+                <a
+                  href={getPhotoUrl(lightbox)}
+                  download={`pixsnap_foto_${lightboxIdx+1}.jpg`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-4 py-2 rounded-xl text-sm font-bold bg-white/10 text-white hover:bg-white/20 flex items-center gap-1.5"
+                  onClick={e => e.stopPropagation()}
+                >
+                  ↓ Ladda ner
+                </a>
                 {paymentEnabled && (
                   <button onClick={() => toggleSelect(lightbox.id)}
                     className={`px-4 py-2 rounded-xl text-sm font-bold ${selected.has(lightbox.id) ? 'bg-white text-neutral-900' : 'bg-white/10 text-white hover:bg-white/20'}`}>
@@ -404,7 +470,6 @@ export default function ResultsPage() {
               <h2 className="text-xl font-bold text-neutral-900 mt-2">Generera tackkort</h2>
               <p className="text-sm text-neutral-500 mt-1">AI skriver ett personligt tackkort till fotografen</p>
             </div>
-
             {!thanksMsg ? (
               <div className="space-y-4">
                 <div>
@@ -419,14 +484,8 @@ export default function ResultsPage() {
               </div>
             ) : (
               <div className="space-y-4">
-                {/* Kortet */}
                 <div className="bg-gradient-to-br from-rose-50 to-pink-50 border border-rose-100 rounded-2xl p-5 relative overflow-hidden">
                   <div className="absolute top-3 right-3 text-2xl opacity-30">💕</div>
-                  {favorites.size > 0 && (
-                    <div className="w-20 h-20 rounded-xl overflow-hidden mb-4 mx-auto border-2 border-white shadow-md">
-                      <Image src={getPhotoUrl(photos.find(p=>favorites.has(p.id))!)} alt="Favoritfoto" width={80} height={80} className="w-full h-full object-cover" />
-                    </div>
-                  )}
                   <p className="text-sm text-neutral-700 leading-relaxed text-center italic">"{thanksMsg}"</p>
                   <p className="text-xs text-neutral-500 text-center mt-3">— {thanksName}</p>
                 </div>

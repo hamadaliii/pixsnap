@@ -1,0 +1,67 @@
+frontend/src
+├── app
+│   ├── admin
+│   │   └── page.tsx
+│   ├── auth
+│   │   ├── callback
+│   │   │   └── route.ts
+│   │   ├── login
+│   │   │   └── page.tsx
+│   │   └── register
+│   │       └── page.tsx
+│   ├── dashboard
+│   │   ├── admin
+│   │   │   └── [id]
+│   │   │       └── page.tsx
+│   │   ├── create-event
+│   │   │   └── page.tsx
+│   │   ├── qr-poster
+│   │   │   └── [id]
+│   │   │       └── page.tsx
+│   │   ├── layout.tsx
+│   │   ├── loading.tsx
+│   │   └── page.tsx
+│   ├── event
+│   │   └── [id]
+│   │       └── page.tsx
+│   ├── privacy
+│   │   └── page.tsx
+│   ├── purchase
+│   │   └── success
+│   │       └── page.tsx
+│   ├── results
+│   │   └── [id]
+│   │       └── page.tsx
+│   ├── session
+│   │   └── [token]
+│   │       └── page.tsx
+│   ├── error.tsx
+│   ├── globals.css
+│   ├── layout.tsx
+│   ├── not-found.tsx
+│   └── page.tsx
+├── components
+│   ├── layout
+│   │   └── Navbar.tsx
+│   └── ui
+│       ├── Button.tsx
+│       ├── Confetti.tsx
+│       ├── Input.tsx
+│       ├── PhotoGrid.tsx
+│       ├── PixieChatbot.tsx
+│       ├── QRDisplay.tsx
+│       ├── Spinner.tsx
+│       └── Toast.tsx
+├── lib
+│   ├── supabase
+│   │   ├── client.ts
+│   │   ├── middleware.ts
+│   │   └── server.ts
+│   └── utils.ts
+├── styles
+│   └── global.css
+├── types
+│   └── index.ts
+└── middleware.ts
+
+29 directories, 36 files

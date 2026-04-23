@@ -1,14 +1,15 @@
 """
-PixSnap API v9 — Full featured
+PixSnap API v10 — SMTP mail, resend support
 """
 
-import os, io, json, zipfile, math
+import os, io, json, zipfile, math, smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 import boto3
 import requests as req
 import stripe
-import resend
 import numpy as np
 import cv2
 import pillow_heif
@@ -47,12 +48,17 @@ AWS_ACCESS_KEY       = os.environ["AWS_ACCESS_KEY"]
 AWS_SECRET_KEY       = os.environ["AWS_SECRET_KEY"]
 AWS_REGION           = os.environ.get("AWS_REGION", "eu-west-1")
 STRIPE_SECRET        = os.environ["STRIPE_SECRET"]
-RESEND_API_KEY       = os.environ["RESEND_API_KEY"]
 FRONTEND_URL         = os.environ.get("FRONTEND_URL", "http://localhost:3000")
+
+# SMTP config (set these in your .env)
+SMTP_HOST     = os.environ.get("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT     = int(os.environ.get("SMTP_PORT", "587"))
+SMTP_USER     = os.environ.get("SMTP_USER", "")
+SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
+SMTP_FROM     = os.environ.get("SMTP_FROM", SMTP_USER)
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 stripe.api_key = STRIPE_SECRET
-resend.api_key = RESEND_API_KEY
 
 rekognition = boto3.client(
     "rekognition",
@@ -61,9 +67,33 @@ rekognition = boto3.client(
     region_name=AWS_REGION,
 )
 
-app = FastAPI(title="PixSnap API v9")
+app = FastAPI(title="PixSnap API v10")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-print("[startup] PixSnap API v9 klar!")
+print("[startup] PixSnap API v10 klar!")
+
+
+# ── SMTP helper ─────────────────────────────────────────────────────────────
+
+def send_email_smtp(to: str, subject: str, html: str):
+    """Send email via SMTP. Falls back silently if not configured."""
+    if not SMTP_USER or not SMTP_PASSWORD:
+        print(f"[smtp] Ingen SMTP-konfiguration — hoppar över email till {to}")
+        return
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"]    = SMTP_FROM
+        msg["To"]      = to
+        msg.attach(MIMEText(html, "html", "utf-8"))
+
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+            server.ehlo()
+            server.starttls()
+            server.login(SMTP_USER, SMTP_PASSWORD)
+            server.sendmail(SMTP_FROM, [to], msg.as_string())
+        print(f"[smtp] Email skickat till {to}")
+    except Exception as e:
+        print(f"[smtp] Fel vid utskick till {to}: {e}")
 
 
 # ── Models ─────────────────────────────────────────────────────────────────
@@ -245,49 +275,41 @@ def detect_screen_or_screenshot(image_bytes: bytes) -> tuple[bool, str]:
 
 def send_notification_email(email: str, event_name: str, session_token: str, photo_count: int):
     gallery_url = f"{FRONTEND_URL}/session/{session_token}"
-    try:
-        resend.Emails.send({
-            "from": "onboarding@resend.dev",
-            "to": [email],
-            "subject": f"📸 Dina foton från {event_name} är redo!",
-            "html": f"""
-            <div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:40px 24px;background:#fff;">
-                <div style="text-align:center;margin-bottom:32px;">
-                    <h1 style="font-size:28px;font-weight:700;color:#111;margin:0;">Dina foton är redo! 🎉</h1>
-                </div>
-                <p style="color:#555;font-size:16px;line-height:1.6;margin-bottom:8px;">
-                    Fotografen har nu publicerat bilderna från <strong>{event_name}</strong>.
-                </p>
-                <p style="color:#555;font-size:16px;line-height:1.6;margin-bottom:32px;">
-                    Vi hittade <strong>{photo_count} foto{'n' if photo_count > 1 else ''}</strong> på dig.
-                    Klicka nedan för att se och ladda ner dem.
-                </p>
-                <div style="text-align:center;margin-bottom:32px;">
-                    <a href="{gallery_url}"
-                       style="display:inline-block;background:#111;color:#fff;text-decoration:none;
-                              padding:16px 40px;border-radius:10px;font-size:16px;font-weight:600;">
-                        Se mina foton →
-                    </a>
-                </div>
-                <div style="border-top:1px solid #eee;padding-top:24px;">
-                    <p style="color:#999;font-size:12px;margin:0;">
-                        Din selfie raderas automatiskt inom 24 timmar.
-                        <a href="{FRONTEND_URL}/privacy" style="color:#999;">Integritetspolicy</a>
-                    </p>
-                </div>
-            </div>
-            """,
-        })
-        print(f"[notify] Email skickat till {email}")
-    except Exception as e:
-        print(f"[notify] Email-fel: {e}")
+    html = f"""
+    <div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:40px 24px;background:#fff;">
+        <div style="text-align:center;margin-bottom:32px;">
+            <h1 style="font-size:28px;font-weight:700;color:#111;margin:0;">Dina foton är redo! 🎉</h1>
+        </div>
+        <p style="color:#555;font-size:16px;line-height:1.6;margin-bottom:8px;">
+            Fotografen har nu publicerat bilderna från <strong>{event_name}</strong>.
+        </p>
+        <p style="color:#555;font-size:16px;line-height:1.6;margin-bottom:32px;">
+            Vi hittade <strong>{photo_count} foto{'n' if photo_count > 1 else ''}</strong> på dig.
+            Klicka nedan för att se och ladda ner dem.
+        </p>
+        <div style="text-align:center;margin-bottom:32px;">
+            <a href="{gallery_url}"
+               style="display:inline-block;background:#111;color:#fff;text-decoration:none;
+                      padding:16px 40px;border-radius:10px;font-size:16px;font-weight:600;">
+                Se mina foton →
+            </a>
+        </div>
+        <div style="border-top:1px solid #eee;padding-top:24px;">
+            <p style="color:#999;font-size:12px;margin:0;">
+                Din selfie raderas automatiskt inom 24 timmar.
+                <a href="{FRONTEND_URL}/privacy" style="color:#999;">Integritetspolicy</a>
+            </p>
+        </div>
+    </div>
+    """
+    send_email_smtp(email, f"📸 Dina foton från {event_name} är redo!", html)
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────
 
 @app.get("/")
 def health():
-    return {"status": "ok", "service": "PixSnap API v9"}
+    return {"status": "ok", "service": "PixSnap API v10"}
 
 
 @app.post("/embed", response_model=EmbedResponse)
@@ -340,7 +362,6 @@ def find_matches(data: FindRequest):
         if event.get("pin_code") and event["pin_code"] != data.pin_code:
             return FindResponse(success=False, matches=[], message="Fel PIN-kod.")
 
-        # Kolla om foton är publicerade
         photos_ready = bool(event.get("published_at"))
 
         image_bytes = download_bytes(data.selfie_url)
@@ -394,9 +415,7 @@ def find_matches(data: FindRequest):
 
 @app.post("/waitlist")
 def join_waitlist(data: WaitlistRequest, background_tasks: BackgroundTasks):
-    """Gäst registrerar sig för notis när foton är klara."""
     try:
-        # Kolla om redan registrerad
         existing = supabase.table("waitlist").select("id") \
             .eq("event_id", data.event_id).eq("email", data.email).execute()
         if existing.data:
@@ -407,31 +426,26 @@ def join_waitlist(data: WaitlistRequest, background_tasks: BackgroundTasks):
             "email": data.email,
         }).execute()
 
-        # Bekräftelse-email
         event = supabase.table("events").select("name").eq("id", data.event_id).single().execute()
         event_name = event.data["name"] if event.data else "eventet"
 
+        html = f"""
+        <div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:40px 24px;">
+            <h2 style="font-size:22px;color:#111;">Vi hör av oss! 📸</h2>
+            <p style="color:#555;font-size:15px;line-height:1.6;">
+                Du är nu registrerad och får ett email med en direkt länk till dina foton
+                så fort fotografen publicerar bilderna från <strong>{event_name}</strong>.
+            </p>
+            <p style="color:#999;font-size:12px;margin-top:32px;">
+                <a href="{FRONTEND_URL}/privacy" style="color:#999;">Integritetspolicy</a>
+            </p>
+        </div>
+        """
         background_tasks.add_task(
-            resend.Emails.send, {
-                "from": "onboarding@resend.dev",
-                "to": [data.email],
-                "subject": f"Vi meddelar dig när foton från {event_name} är klara",
-                "html": f"""
-                <div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:40px 24px;">
-                    <h2 style="font-size:22px;color:#111;">Vi hör av oss! 📸</h2>
-                    <p style="color:#555;font-size:15px;line-height:1.6;">
-                        Du är nu registrerad och får ett email med en direkt länk till dina foton
-                        så fort fotografen publicerar bilderna från <strong>{event_name}</strong>.
-                    </p>
-                    <p style="color:#555;font-size:14px;line-height:1.6;">
-                        Du behöver inte göra något mer — vi skickar länken direkt till dig.
-                    </p>
-                    <p style="color:#999;font-size:12px;margin-top:32px;">
-                        <a href="{FRONTEND_URL}/privacy" style="color:#999;">Integritetspolicy</a>
-                    </p>
-                </div>
-                """,
-            }
+            send_email_smtp,
+            data.email,
+            f"Vi meddelar dig när foton från {event_name} är klara",
+            html
         )
 
         return {"success": True, "message": f"Du får ett email när foton från {event_name} är klara"}
@@ -441,23 +455,18 @@ def join_waitlist(data: WaitlistRequest, background_tasks: BackgroundTasks):
 
 @app.post("/publish")
 def publish_event(data: PublishRequest, background_tasks: BackgroundTasks):
-    """Fotografen publicerar foton — skickar notifikationer till alla på väntelistan."""
+    """Publish photos and notify everyone on the waitlist. Can be called multiple times."""
     try:
-        # Verifiera ägande
         event = supabase.table("events").select("*").eq("id", data.event_id).eq("created_by", data.user_id).single().execute()
         if not event.data:
             raise HTTPException(status_code=403, detail="Ingen behörighet")
 
-        if event.data.get("notification_sent"):
-            return {"success": True, "message": "Notifikationer redan skickade", "count": 0}
-
-        # Markera som publicerat
+        # Mark as published (allow re-publish)
         supabase.table("events").update({
             "published_at": datetime.now(timezone.utc).isoformat(),
             "notification_sent": True,
         }).eq("id", data.event_id).execute()
 
-        # Hämta väntelistan
         waitlist = supabase.table("waitlist").select("*").eq("event_id", data.event_id).execute()
         event_name = event.data["name"]
         count = 0
@@ -466,7 +475,6 @@ def publish_event(data: PublishRequest, background_tasks: BackgroundTasks):
             if not entry.get("email"):
                 continue
 
-            # Matcha foton för denna person om selfie finns
             matched = []
             if entry.get("selfie_url"):
                 try:
@@ -482,7 +490,6 @@ def publish_event(data: PublishRequest, background_tasks: BackgroundTasks):
                     pass
 
             if matched:
-                # Skapa session med matchade foton
                 session_result = supabase.table("guest_sessions").insert({
                     "event_id": data.event_id,
                     "email": entry["email"],
@@ -491,37 +498,29 @@ def publish_event(data: PublishRequest, background_tasks: BackgroundTasks):
                 token = session_result.data[0]["token"]
                 background_tasks.add_task(send_notification_email, entry["email"], event_name, token, len(matched))
             else:
-                # Skicka email som ber dem skanna igen
-                # Hämta event slug för länken
                 event_slug_result = supabase.table("events").select("slug").eq("id", data.event_id).single().execute()
                 event_slug = event_slug_result.data["slug"] if event_slug_result.data else ""
                 selfie_url = f"{FRONTEND_URL}/event/{event_slug}"
-                background_tasks.add_task(
-                    resend.Emails.send, {
-                        "from": "onboarding@resend.dev",
-                        "to": [entry["email"]],
-                        "subject": f"📸 Foton från {event_name} är nu klara!",
-                        "html": f"""
-                        <div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:40px 24px;">
-                            <h2 style="font-size:22px;color:#111;">Foton från {event_name} är klara! 🎉</h2>
-                            <p style="color:#555;font-size:15px;line-height:1.6;">
-                                Fotografen har nu lagt upp bilderna.
-                                Klicka nedan för att ladda upp din selfie och hitta dina foton.
-                            </p>
-                            <div style="text-align:center;margin:32px 0;">
-                                <a href="{selfie_url}"
-                                   style="display:inline-block;background:#111;color:#fff;text-decoration:none;
-                                          padding:16px 40px;border-radius:10px;font-size:16px;font-weight:600;">
-                                    Hitta mina foton →
-                                </a>
-                            </div>
-                            <p style="color:#999;font-size:12px;margin-top:32px;">
-                                <a href="{FRONTEND_URL}/privacy" style="color:#999;">Integritetspolicy</a>
-                            </p>
-                        </div>
-                        """,
-                    }
-                )
+                html = f"""
+                <div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:40px 24px;">
+                    <h2 style="font-size:22px;color:#111;">Foton från {event_name} är klara! 🎉</h2>
+                    <p style="color:#555;font-size:15px;line-height:1.6;">
+                        Fotografen har nu lagt upp bilderna.
+                        Klicka nedan för att ladda upp din selfie och hitta dina foton.
+                    </p>
+                    <div style="text-align:center;margin:32px 0;">
+                        <a href="{selfie_url}"
+                           style="display:inline-block;background:#111;color:#fff;text-decoration:none;
+                                  padding:16px 40px;border-radius:10px;font-size:16px;font-weight:600;">
+                            Hitta mina foton →
+                        </a>
+                    </div>
+                    <p style="color:#999;font-size:12px;margin-top:32px;">
+                        <a href="{FRONTEND_URL}/privacy" style="color:#999;">Integritetspolicy</a>
+                    </p>
+                </div>
+                """
+                background_tasks.add_task(send_email_smtp, entry["email"], f"📸 Foton från {event_name} är nu klara!", html)
             count += 1
 
         return {"success": True, "message": f"Notifikationer skickade till {count} gäster", "count": count}
@@ -552,7 +551,6 @@ def create_checkout(data: CheckoutRequest):
         if not data.photo_ids:
             raise HTTPException(status_code=400, detail="Inga foton valda")
 
-        # Hämta event för prisinfo
         photo = supabase.table("photos").select("event_id").eq("id", data.photo_ids[0]).single().execute()
         event_id = photo.data["event_id"] if photo.data else None
 
@@ -563,7 +561,6 @@ def create_checkout(data: CheckoutRequest):
         package_price = event.data.get("package_price_ore", 4900) if event and event.data else 4900
         event_name = event.data.get("name", "PixSnap") if event and event.data else "PixSnap"
 
-        # Beräkna pris
         if data.package and package_enabled:
             total_ore = package_price
             product_name = f"Alla foton — {event_name}"
@@ -667,6 +664,7 @@ def download_zip(purchase_id: str):
 
 @app.get("/download-free")
 def download_free(ids: str):
+    """Download watermarked photos (free tier)."""
     try:
         photo_ids = [i for i in ids.split(",") if i]
         photos = supabase.table("photos").select("id, watermark_url, public_url").in_("id", photo_ids).execute()
@@ -674,6 +672,7 @@ def download_free(ids: str):
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             for i, p in enumerate(photos.data):
                 try:
+                    # Prefer pre-generated watermark_url; fall back to generating on the fly
                     url = p.get("watermark_url") or p["public_url"]
                     img_bytes = download_bytes(url)
                     if not p.get("watermark_url"):
@@ -688,6 +687,26 @@ def download_free(ids: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/download-free-original")
+def download_free_original(ids: str):
+    """Download original quality photos (when payment is disabled)."""
+    try:
+        photo_ids = [i for i in ids.split(",") if i]
+        photos = supabase.table("photos").select("id, public_url").in_("id", photo_ids).execute()
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for i, p in enumerate(photos.data):
+                try:
+                    zf.writestr(f"pixsnap_foto_{i+1}.jpg", download_bytes(p["public_url"]))
+                except Exception as e:
+                    print(f"[zip] Fel: {e}")
+        buf.seek(0)
+        return StreamingResponse(buf, media_type="application/zip",
+            headers={"Content-Disposition": "attachment; filename=pixsnap_foton.zip"})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/session/{token}")
 def get_session(token: str):
     try:
@@ -696,7 +715,6 @@ def get_session(token: str):
             raise HTTPException(status_code=404, detail="Session hittades inte")
         photos = supabase.table("photos").select("id, public_url, watermark_url").in_("id", result.data["photo_ids"]).execute()
 
-        # Hämta event-info för prisvisning
         event = supabase.table("events").select("price_per_photo_ore, package_enabled, package_price_ore, name, photographer_logo_url").eq("id", result.data["event_id"]).single().execute()
 
         return {
@@ -711,7 +729,7 @@ def get_session(token: str):
 
 
 @app.post("/send-email")
-def send_email(data: EmailRequest):
+def send_email_route(data: EmailRequest):
     try:
         result = supabase.table("guest_sessions").select("*").eq("token", data.session_token).single().execute()
         if not result.data:
@@ -723,21 +741,17 @@ def send_email(data: EmailRequest):
         event = supabase.table("events").select("name").eq("id", result.data["event_id"]).single().execute()
         event_name = event.data["name"] if event.data else "eventet"
 
-        resend.Emails.send({
-            "from": "onboarding@resend.dev",
-            "to": [data.email],
-            "subject": f"Dina {photo_count} foton från {event_name}",
-            "html": f"""
-            <div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:40px 24px;">
-                <h2 style="font-size:22px;color:#111;">Dina foton är redo 📸</h2>
-                <p style="color:#555;font-size:15px;line-height:1.6;margin-bottom:32px;">
-                    Vi hittade {photo_count} foto{'n' if photo_count > 1 else ''} på dig från <strong>{event_name}</strong>.
-                </p>
-                <a href="{gallery_url}" style="display:inline-block;background:#111;color:#fff;text-decoration:none;padding:14px 32px;border-radius:8px;font-size:15px;font-weight:600;">Se dina foton →</a>
-                <p style="color:#999;font-size:12px;margin-top:32px;">Länken gäller i 30 dagar. Din selfie raderas inom 24h.</p>
-            </div>
-            """,
-        })
+        html = f"""
+        <div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:40px 24px;">
+            <h2 style="font-size:22px;color:#111;">Dina foton är redo 📸</h2>
+            <p style="color:#555;font-size:15px;line-height:1.6;margin-bottom:32px;">
+                Vi hittade {photo_count} foto{'n' if photo_count > 1 else ''} på dig från <strong>{event_name}</strong>.
+            </p>
+            <a href="{gallery_url}" style="display:inline-block;background:#111;color:#fff;text-decoration:none;padding:14px 32px;border-radius:8px;font-size:15px;font-weight:600;">Se dina foton →</a>
+            <p style="color:#999;font-size:12px;margin-top:32px;">Länken gäller i 30 dagar. Din selfie raderas inom 24h.</p>
+        </div>
+        """
+        send_email_smtp(data.email, f"Dina {photo_count} foton från {event_name}", html)
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -813,23 +827,5 @@ def get_event_stats(event_id: str):
             "waitlist_count": len(waitlist.data),
             "daily": daily,
         }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-@app.get("/download-free-original")
-def download_free_original(ids: str):
-    """Download original quality photos (used when payment is disabled)."""
-    try:
-        photo_ids = [i for i in ids.split(",") if i]
-        photos = supabase.table("photos").select("id, public_url").in_("id", photo_ids).execute()
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            for i, p in enumerate(photos.data):
-                try:
-                    zf.writestr(f"pixsnap_foto_{i+1}.jpg", download_bytes(p["public_url"]))
-                except Exception as e:
-                    print(f"[zip] Fel: {e}")
-        buf.seek(0)
-        return StreamingResponse(buf, media_type="application/zip",
-            headers={"Content-Disposition": "attachment; filename=pixsnap_foton.zip"})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
