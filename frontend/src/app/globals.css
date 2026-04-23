@@ -1,0 +1,63 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --font-sans: 'Geist', 'Inter', system-ui, sans-serif;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    @apply bg-white text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100;
+  }
+
+  /* Remove default button styles */
+  button {
+    @apply cursor-pointer;
+  }
+
+  /* Focus ring — accessible but subtle */
+  :focus-visible {
+    @apply outline-none ring-2 ring-neutral-900 ring-offset-2 dark:ring-neutral-100;
+  }
+}
+
+@layer components {
+  /* ── Input ───────────────────────────────── */
+  .input {
+    @apply w-full px-3 py-2 text-sm
+      bg-white dark:bg-neutral-900
+      border border-neutral-200 dark:border-neutral-800
+      rounded-md text-neutral-900 dark:text-neutral-100
+      placeholder:text-neutral-400 dark:placeholder:text-neutral-600
+      transition-colors duration-150
+      focus:outline-none focus:ring-1 focus:ring-neutral-900 dark:focus:ring-neutral-100
+      disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  /* ── Label ───────────────────────────────── */
+  .label {
+    @apply block text-xs font-medium text-neutral-600 dark:text-neutral-400 mb-1.5 uppercase tracking-wide;
+  }
+
+  /* ── Card ────────────────────────────────── */
+  .card {
+    @apply bg-white dark:bg-neutral-900
+      border border-neutral-100 dark:border-neutral-800
+      rounded-xl p-6;
+  }
+
+  /* ── Divider ─────────────────────────────── */
+  .divider {
+    @apply border-t border-neutral-100 dark:border-neutral-800;
+  }
+}
