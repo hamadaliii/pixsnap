@@ -1,62 +1,43 @@
 'use client'
-
 import { useEffect, useState } from 'react'
-import Image from 'next/image'
 import QRCode from 'qrcode'
-import { Button } from './Button'
 
 interface QRDisplayProps {
   url: string
   slug: string
+  size?: number
 }
 
-export function QRDisplay({ url, slug }: QRDisplayProps) {
+export function QRDisplay({ url, slug, size = 180 }: QRDisplayProps) {
   const [qrDataUrl, setQrDataUrl] = useState<string>('')
 
   useEffect(() => {
     QRCode.toDataURL(url, {
-      width: 400,
+      width: size * 2,
       margin: 2,
-      color: {
-        dark: '#111111',
-        light: '#ffffff',
-      },
+      color: { dark: '#0D0E14', light: '#ffffff' },
     }).then(setQrDataUrl)
-  }, [url])
+  }, [url, size])
 
   if (!qrDataUrl) {
-    return (
-      <div className="w-[200px] h-[200px] bg-neutral-100 dark:bg-neutral-800 rounded-lg animate-pulse" />
-    )
+    return <div style={{ width: size, height: size, borderRadius: 10, background: '#F2F4FA', animation: 'pulse 1.5s ease-in-out infinite' }} />
   }
 
   return (
-    <div className="space-y-4">
-      {/* QR image in white box so it's scannable in dark mode */}
-      <div className="bg-white p-4 rounded-xl inline-block">
-        <Image
-          src={qrDataUrl}
-          alt={`QR code for ${slug}`}
-          width={200}
-          height={200}
-          className="w-[200px] h-[200px]"
-        />
+    <div>
+      <div style={{ background: 'white', padding: 12, borderRadius: 12, border: '1px solid #EAEDF4', display: 'inline-block', boxShadow: '0 2px 8px rgba(0,0,0,0.06)' }}>
+        <img src={qrDataUrl} alt={`QR kod för ${slug}`} style={{ width: size, height: size, display: 'block' }} />
       </div>
-
-      {/* URL label */}
-      <p className="text-xs text-neutral-400 dark:text-neutral-600 break-all font-mono">
+      <p style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 8, fontFamily: 'monospace', wordBreak: 'break-all' }}>
         {url}
       </p>
-
-      {/* Download button */}
       <a href={qrDataUrl} download={`qr-${slug}.png`}>
-        <Button variant="secondary" size="sm" className="w-full">
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-              d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+        <button className="ps-btn ps-btn-secondary ps-btn-sm" style={{ marginTop: 8, width: '100%' }}>
+          <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+            <path d="M6.5 2v7M3.5 6.5l3 3 3-3M1 11h11" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
           </svg>
-          Download QR
-        </Button>
+          Ladda ner QR
+        </button>
       </a>
     </div>
   )

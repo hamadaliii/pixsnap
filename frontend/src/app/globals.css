@@ -1,63 +1,135 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-@layer base {
-  :root {
-    --font-sans: 'Geist', 'Inter', system-ui, sans-serif;
-  }
-
-  * {
-    box-sizing: border-box;
-  }
-
-  html {
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
-  }
-
-  body {
-    @apply bg-white text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100;
-  }
-
-  /* Remove default button styles */
-  button {
-    @apply cursor-pointer;
-  }
-
-  /* Focus ring — accessible but subtle */
-  :focus-visible {
-    @apply outline-none ring-2 ring-neutral-900 ring-offset-2 dark:ring-neutral-100;
-  }
+/* ─── Design tokens ───────────────────────────────── */
+:root {
+  --brand:       #5B63F1;
+  --brand-dark:  #4047D4;
+  --brand-light: #EEF0FD;
+  --grad:        linear-gradient(135deg, #5B63F1 0%, #8B5CF6 100%);
+  --bg:          #F8F9FC;
+  --surface:     #FFFFFF;
+  --surface-2:   #F2F4FA;
+  --glass-bg:    rgba(255,255,255,0.72);
+  --glass-bd:    rgba(255,255,255,0.90);
+  --glass-sh:    0 4px 24px rgba(91,99,241,0.08), 0 1px 3px rgba(0,0,0,0.04);
+  --glass-sh-lg: 0 12px 48px rgba(91,99,241,0.13), 0 2px 8px rgba(0,0,0,0.06);
+  --text-1: #0D0E14;
+  --text-2: #5A5D72;
+  --text-3: #9598B0;
+  --success: #22C55E;
+  --warning: #F59E0B;
+  --danger:  #EF4444;
+  --r-sm: 8px; --r-md: 12px; --r-lg: 16px;
+  --r-xl: 20px; --r-2xl: 24px; --r-3xl: 32px;
+  --ease-out: cubic-bezier(0.16,1,0.3,1);
+  --ease-spring: cubic-bezier(0.34,1.56,0.64,1);
 }
 
-@layer components {
-  /* ── Input ───────────────────────────────── */
-  .input {
-    @apply w-full px-3 py-2 text-sm
-      bg-white dark:bg-neutral-900
-      border border-neutral-200 dark:border-neutral-800
-      rounded-md text-neutral-900 dark:text-neutral-100
-      placeholder:text-neutral-400 dark:placeholder:text-neutral-600
-      transition-colors duration-150
-      focus:outline-none focus:ring-1 focus:ring-neutral-900 dark:focus:ring-neutral-100
-      disabled:opacity-50 disabled:cursor-not-allowed;
-  }
+/* ─── Reset ───────────────────────────────────────── */
+*,*::before,*::after{box-sizing:border-box}
+html{scroll-behavior:smooth;-webkit-font-smoothing:antialiased}
+body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--text-1);overflow-x:hidden;min-height:100vh}
+::-webkit-scrollbar{width:4px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:#DDE0F0;border-radius:4px}
 
-  /* ── Label ───────────────────────────────── */
-  .label {
-    @apply block text-xs font-medium text-neutral-600 dark:text-neutral-400 mb-1.5 uppercase tracking-wide;
-  }
+/* ─── Glass ───────────────────────────────────────── */
+.glass{background:var(--glass-bg);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid var(--glass-bd);box-shadow:var(--glass-sh)}
+.glass-strong{background:rgba(255,255,255,0.88);backdrop-filter:blur(28px);-webkit-backdrop-filter:blur(28px);border:1px solid var(--glass-bd);box-shadow:var(--glass-sh-lg)}
+.grad-text{background:var(--grad);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
 
-  /* ── Card ────────────────────────────────── */
-  .card {
-    @apply bg-white dark:bg-neutral-900
-      border border-neutral-100 dark:border-neutral-800
-      rounded-xl p-6;
-  }
+/* ─── Input / Label ───────────────────────────────── */
+.input,.ps-input{width:100%;padding:11px 14px;background:#FAFBFF;border:1.5px solid #E4E7F2;border-radius:var(--r-md);font-family:'Inter',sans-serif;font-size:14px;color:var(--text-1);outline:none;transition:border-color .15s,box-shadow .15s}
+.input:focus,.ps-input:focus{border-color:var(--brand);background:#fff;box-shadow:0 0 0 3px rgba(91,99,241,0.10)}
+.input::placeholder,.ps-input::placeholder{color:var(--text-3)}
+.label,.ps-label{display:block;font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:6px;letter-spacing:.01em}
 
-  /* ── Divider ─────────────────────────────── */
-  .divider {
-    @apply border-t border-neutral-100 dark:border-neutral-800;
-  }
+/* ─── Buttons ─────────────────────────────────────── */
+.ps-btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;font-family:'Inter',sans-serif;font-weight:600;border:none;cursor:pointer;text-decoration:none;white-space:nowrap;transition:transform .18s var(--ease-spring),box-shadow .18s,opacity .15s;border-radius:var(--r-md);font-size:14px;padding:10px 20px}
+.ps-btn:hover{transform:translateY(-1px)}
+.ps-btn:active{transform:translateY(0) scale(0.98)}
+.ps-btn:disabled{opacity:.4;cursor:not-allowed;transform:none!important;pointer-events:none}
+.ps-btn-primary{background:var(--grad);color:#fff;box-shadow:0 3px 12px rgba(91,99,241,0.30)}
+.ps-btn-primary:hover{box-shadow:0 6px 20px rgba(91,99,241,0.38)}
+.ps-btn-secondary{background:var(--surface);color:var(--text-1);border:1.5px solid #E4E7F2;box-shadow:0 1px 3px rgba(0,0,0,0.04)}
+.ps-btn-secondary:hover{border-color:var(--brand)}
+.ps-btn-ghost{background:transparent;color:var(--text-2)}
+.ps-btn-ghost:hover{background:var(--surface-2);color:var(--text-1)}
+.ps-btn-danger{background:rgba(239,68,68,0.08);color:var(--danger);border:1.5px solid rgba(239,68,68,0.18)}
+.ps-btn-sm{font-size:12px;padding:7px 13px}
+.ps-btn-lg{font-size:15px;padding:13px 28px;border-radius:var(--r-lg)}
+.ps-btn-xl{font-size:16px;padding:15px 36px;border-radius:var(--r-xl)}
+
+/* ─── Badge ───────────────────────────────────────── */
+.badge{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:600;padding:3px 9px;border-radius:9999px}
+.badge-green{background:rgba(34,197,94,0.12);color:#16a34a}
+.badge-amber{background:rgba(245,158,11,0.12);color:#B45309}
+.badge-blue{background:rgba(59,130,246,0.10);color:#2563EB}
+.badge-violet{background:rgba(91,99,241,0.10);color:var(--brand)}
+.badge-red{background:rgba(239,68,68,0.10);color:var(--danger)}
+.badge-gray{background:#F2F4FA;color:var(--text-2)}
+
+/* ─── Card ────────────────────────────────────────── */
+.ps-card{background:var(--surface);border:1px solid #EAEDF4;border-radius:var(--r-2xl);box-shadow:0 1px 4px rgba(0,0,0,0.04);transition:box-shadow .22s var(--ease-out),transform .22s var(--ease-out)}
+.ps-card-hover:hover{box-shadow:var(--glass-sh-lg);transform:translateY(-2px)}
+
+/* ─── Toggle ──────────────────────────────────────── */
+.ps-toggle{position:relative;width:42px;height:24px;border-radius:9999px;border:none;cursor:pointer;transition:background .2s;flex-shrink:0}
+.ps-toggle[data-on="true"]{background:var(--brand)}
+.ps-toggle[data-on="false"]{background:#DDE0EE}
+.ps-toggle::after{content:'';position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:white;box-shadow:0 1px 4px rgba(0,0,0,0.18);transition:transform .2s var(--ease-spring)}
+.ps-toggle[data-on="true"]::after{transform:translateX(18px)}
+
+/* ─── Spinner ─────────────────────────────────────── */
+.ps-spin{width:20px;height:20px;border:2.5px solid rgba(91,99,241,0.15);border-top-color:var(--brand);border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0}
+.ps-spin-sm{width:14px;height:14px;border-width:2px}
+.ps-spin-white{border-color:rgba(255,255,255,0.3);border-top-color:white}
+
+/* ─── Progress bar ────────────────────────────────── */
+.ps-progress{height:5px;background:#E9EBF4;border-radius:9999px;overflow:hidden}
+.ps-progress-fill{height:100%;border-radius:9999px;background:var(--grad);transition:width .8s var(--ease-out)}
+
+/* ─── Sidebar ─────────────────────────────────────── */
+.ps-sidebar-link{display:flex;align-items:center;gap:9px;padding:9px 12px;border-radius:var(--r-md);font-size:13.5px;font-weight:500;color:var(--text-2);text-decoration:none;transition:background .15s,color .15s;cursor:pointer;width:100%;border:none;background:none;font-family:'Inter',sans-serif;text-align:left}
+.ps-sidebar-link:hover{background:var(--brand-light);color:var(--brand)}
+.ps-sidebar-link.active{background:var(--brand-light);color:var(--brand);font-weight:600}
+.ps-sidebar-section{font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--text-3);padding:14px 12px 6px}
+
+/* ─── Toast ───────────────────────────────────────── */
+.ps-toast{position:fixed;bottom:24px;right:24px;z-index:9999;display:flex;align-items:center;gap:10px;background:var(--text-1);color:#fff;padding:12px 18px;border-radius:var(--r-lg);font-size:13px;font-weight:500;box-shadow:0 8px 32px rgba(0,0,0,0.2);animation:slideInUp .35s var(--ease-out);max-width:360px}
+
+/* ─── Animations ──────────────────────────────────── */
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes slideInUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
+@keyframes fadeUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:none}}
+@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
+@keyframes blobFloat{0%,100%{transform:translate(0,0) scale(1)}33%{transform:translate(20px,-15px) scale(1.05)}66%{transform:translate(-10px,10px) scale(0.97)}}
+@keyframes textReveal{from{opacity:0;filter:blur(8px);transform:translateY(14px)}to{opacity:1;filter:none;transform:none}}
+@keyframes pulseRing{0%{transform:scale(0.9);opacity:0.8}100%{transform:scale(2.2);opacity:0}}
+@keyframes scanLine{0%{top:12%}100%{top:88%}}
+@keyframes confettiFall{0%{transform:translateY(-20px) rotate(0deg);opacity:1}100%{transform:translateY(100vh) rotate(720deg);opacity:0}}
+@keyframes bounceIn{0%{transform:scale(0.4);opacity:0}50%{transform:scale(1.06)}70%{transform:scale(0.96)}100%{transform:scale(1);opacity:1}}
+
+.anim-float{animation:float 5s ease-in-out infinite}
+.anim-reveal{opacity:0;transform:translateY(20px);transition:opacity .6s var(--ease-out),transform .6s var(--ease-out)}
+.anim-reveal.in{opacity:1;transform:none}
+.anim-delay-1{animation-delay:.1s;transition-delay:.1s}
+.anim-delay-2{animation-delay:.2s;transition-delay:.2s}
+.anim-delay-3{animation-delay:.3s;transition-delay:.3s}
+.anim-delay-4{animation-delay:.4s;transition-delay:.4s}
+.anim-delay-5{animation-delay:.5s;transition-delay:.5s}
+
+/* ─── Responsive ──────────────────────────────────── */
+@media(max-width:768px){
+  .ps-hide-mobile{display:none!important}
+  .ps-full-mobile{width:100%!important}
+}
+@media print{
+  .no-print{display:none!important}
+  body{background:white}
+  @page{size:A4;margin:0}
 }

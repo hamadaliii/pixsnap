@@ -1,30 +1,36 @@
 'use client'
 import { useEffect, useState } from 'react'
 import { useParams, useSearchParams } from 'next/navigation'
-import Image from 'next/image'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
+import { PS_LOGO } from '@/components/layout/Navbar'
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000'
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? process.env.NEXT_PUBLIC_PYTHON_SERVICE_URL ?? 'http://localhost:8000'
 
 interface Photo { id: string; public_url: string; watermark_url: string | null }
-interface EventSettings {
-  slug: string; name: string
-  price_per_photo_ore: number; package_enabled: boolean; package_price_ore: number
-  payment_enabled: boolean; watermark_enabled: boolean; browse_all_enabled: boolean
+interface Ev { slug: string; name: string; price_per_photo_ore: number; package_enabled: boolean; package_price_ore: number; payment_enabled: boolean; watermark_enabled: boolean; browse_all_enabled: boolean }
+
+function getFavs(eid: string): string[] { try { return JSON.parse(localStorage.getItem(`ps_fav_${eid}`) ?? '[]') } catch { return [] } }
+function saveFavs(eid: string, ids: string[]) { try { localStorage.setItem(`ps_fav_${eid}`, JSON.stringify(ids)) } catch {} }
+
+function isMobile() { return typeof navigator !== 'undefined' && /iPhone|iPad|Android/i.test(navigator.userAgent) }
+
+/** Best URL to display: watermark_url is always JPEG (never HEIC) */
+function dispUrl(photo: Photo, payEnabled: boolean, wmEnabled: boolean) {
+  if (!payEnabled || !wmEnabled) return photo.public_url
+  return photo.watermark_url ?? photo.public_url
 }
 
-function getFavorites(eventId: string): string[] {
-  try { return JSON.parse(localStorage.getItem(`ps_fav_${eventId}`) ?? '[]') } catch { return [] }
-}
-function saveFavorites(eventId: string, ids: string[]) {
-  try { localStorage.setItem(`ps_fav_${eventId}`, JSON.stringify(ids)) } catch {}
-}
-
-/** True if the device is a phone — prefers direct download over zip */
-function isMobile() {
-  if (typeof navigator === 'undefined') return false
-  return /iPhone|iPad|iPod|Android/i.test(navigator.userAgent)
+function launchConfetti() {
+  const colors = ['#5B63F1','#8B5CF6','#EC4899','#22C55E','#F59E0B']
+  for (let i = 0; i < 55; i++) {
+    const p = document.createElement('div')
+    const c = colors[Math.floor(Math.random() * colors.length)]
+    const s = 5 + Math.random() * 9
+    p.style.cssText = `position:fixed;top:-20px;left:${Math.random()*100}vw;width:${s}px;height:${s}px;border-radius:${Math.random()>.5?'50%':'2px'};background:${c};pointer-events:none;z-index:9999;animation:confettiFall ${2+Math.random()*2}s linear ${Math.random()*.6}s forwards`
+    document.body.appendChild(p)
+    setTimeout(() => p.remove(), 4000)
+  }
 }
 
 export default function ResultsPage() {
@@ -35,26 +41,26 @@ export default function ResultsPage() {
 
   const [photos, setPhotos] = useState<Photo[]>([])
   const [allPhotos, setAllPhotos] = useState<Photo[]>([])
-  const [settings, setSettings] = useState<EventSettings | null>(null)
+  const [ev, setEv] = useState<Ev | null>(null)
   const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState<Set<string>>(new Set())
-  const [favorites, setFavorites] = useState<Set<string>>(new Set())
-  const [lightbox, setLightbox] = useState<Photo | null>(null)
+  const [favs, setFavs] = useState<Set<string>>(new Set())
+  const [lightbox, setLightbox] = useState<{ photo: Photo; idx: number } | null>(null)
   const [showAll, setShowAll] = useState(false)
   const [filterFavs, setFilterFavs] = useState(false)
   const [email, setEmail] = useState('')
   const [emailSent, setEmailSent] = useState(false)
   const [emailLoading, setEmailLoading] = useState(false)
   const [checkoutLoading, setCheckoutLoading] = useState(false)
-  const [packageLoading, setPackageLoading] = useState(false)
-  const [confettiDone, setConfettiDone] = useState(false)
+  const [pkgLoading, setPkgLoading] = useState(false)
   const [mobile, setMobile] = useState(false)
-
-  // Tackkort state
-  const [showThanksCard, setShowThanksCard] = useState(false)
+  const [toast, setToast] = useState('')
+  const [showThanks, setShowThanks] = useState(false)
   const [thanksName, setThanksName] = useState('')
   const [thanksMsg, setThanksMsg] = useState('')
   const [thanksLoading, setThanksLoading] = useState(false)
+  const [photoCounter, setPhotoCounter] = useState(0)
+  const [confettiDone, setConfettiDone] = useState(false)
 
   useEffect(() => { setMobile(isMobile()) }, [])
 
@@ -65,12 +71,11 @@ export default function ResultsPage() {
         const { data: event } = await supabase.from('events')
           .select('slug,name,price_per_photo_ore,package_enabled,package_price_ore,payment_enabled,watermark_enabled,browse_all_enabled')
           .eq('id', eventId).single()
-        if (event) setSettings(event)
-
+        if (event) setEv(event)
         if (matchIds) {
           const ids = matchIds.split(',').filter(Boolean)
-          if (ids.length > 0) {
-            const { data } = await supabase.from('photos').select('*').in('id', ids)
+          if (ids.length) {
+            const { data } = await supabase.from('photos').select('id,public_url,watermark_url').in('id', ids)
             setPhotos(data ?? [])
           }
         }
@@ -78,425 +83,408 @@ export default function ResultsPage() {
           const { data: all } = await supabase.from('photos').select('id,public_url,watermark_url').eq('event_id', eventId).limit(500)
           setAllPhotos(all ?? [])
         }
-
-        const savedFavs = getFavorites(eventId)
-        setFavorites(new Set(savedFavs))
-      } catch (e) { console.error(e) }
+        setFavs(new Set(getFavs(eventId)))
+      } catch {}
       setLoading(false)
     }
     load()
   }, [eventId, searchParams, supabase])
 
   useEffect(() => {
-    if (confettiDone || photos.length === 0) return
-    setConfettiDone(true)
-    const canvas = document.createElement('canvas')
-    canvas.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:9999;width:100vw;height:100vh'
-    canvas.width = window.innerWidth; canvas.height = window.innerHeight
-    document.body.appendChild(canvas)
-    const ctx = canvas.getContext('2d')!
-    const colors = ['#111','#555','#888','#ccc','#ddd','#f0f0f0']
-    const p = Array.from({ length: 70 }, () => ({
-      x: Math.random() * canvas.width, y: -20,
-      vx: (Math.random()-0.5)*5, vy: Math.random()*3+2,
-      color: colors[Math.floor(Math.random()*colors.length)],
-      size: Math.random()*8+3, rot: Math.random()*Math.PI*2, rv: (Math.random()-0.5)*0.15
-    }))
-    let frame = 0
-    function draw() {
-      ctx.clearRect(0,0,canvas.width,canvas.height)
-      p.forEach(q => { q.x+=q.vx; q.y+=q.vy; q.vy+=0.07; q.rot+=q.rv; ctx.save(); ctx.translate(q.x,q.y); ctx.rotate(q.rot); ctx.fillStyle=q.color; ctx.globalAlpha=Math.max(0,1-frame/90); ctx.fillRect(-q.size/2,-q.size/4,q.size,q.size/2); ctx.restore() })
-      frame++
-      if(frame<90) requestAnimationFrame(draw)
-      else if(document.body.contains(canvas)) document.body.removeChild(canvas)
+    if (photos.length > 0 && !confettiDone) {
+      setConfettiDone(true)
+      launchConfetti()
+      let n = 0
+      const t = setInterval(() => { n++; setPhotoCounter(n); if (n >= photos.length) clearInterval(t) }, 70)
     }
-    draw()
-  }, [photos, confettiDone])
+  }, [photos.length, confettiDone])
 
-  function toggleFavorite(id: string, e: React.MouseEvent) {
+  function showToast(msg: string) { setToast(msg); setTimeout(() => setToast(''), 2800) }
+
+  function toggleFav(id: string, e: React.MouseEvent) {
     e.stopPropagation()
-    setFavorites(prev => {
-      const n = new Set(prev)
-      n.has(id) ? n.delete(id) : n.add(id)
-      saveFavorites(eventId, Array.from(n))
-      return n
+    setFavs(prev => {
+      const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id)
+      saveFavs(eventId, Array.from(n)); return n
     })
   }
 
-  function toggleSelect(id: string, e?: React.MouseEvent) {
+  function toggleSel(id: string, e?: React.MouseEvent) {
     e?.stopPropagation()
     setSelected(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
   }
 
-  async function generateThanksCard() {
+  async function generateThanks() {
     if (!thanksName.trim()) return
     setThanksLoading(true)
     try {
       const res = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
-          max_tokens: 200,
-          messages: [{
-            role: 'user',
-            content: `Skriv ett personligt och varmt tackkort på svenska från en eventgäst som heter "${thanksName}" till fotografen för eventet "${settings?.name ?? 'eventet'}". Kortet ska vara 2-3 meningar, varmt, personligt och tacksamt. Inkludera inte rubriker, bara själva texten.`
-          }]
+          model: 'claude-sonnet-4-20250514', max_tokens: 200,
+          messages: [{ role: 'user', content: `Skriv ett kort, varmt tackkort på svenska från "${thanksName}" till fotografen för eventet "${ev?.name ?? 'eventet'}". 2-3 meningar. Bara texten.` }]
         })
       })
       const d = await res.json()
       setThanksMsg(d.content?.[0]?.text ?? '')
-    } catch { setThanksMsg(`Tack så mycket för de fantastiska fotona från ${settings?.name}! Du fångade dagen på ett otroligt sätt. Vi kommer att minnas dessa bilder för alltid.`) }
+    } catch { setThanksMsg(`Tack för de fantastiska fotona från ${ev?.name}! Du fångade dagen perfekt.`) }
     setThanksLoading(false)
   }
 
-  async function handleCheckout(usePackage = false) {
+  async function checkout(usePackage = false) {
     if (!usePackage && selected.size === 0) return
-    usePackage ? setPackageLoading(true) : setCheckoutLoading(true)
+    usePackage ? setPkgLoading(true) : setCheckoutLoading(true)
     try {
       const res = await fetch(`${API_URL}/create-checkout`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ photo_ids: usePackage ? photos.map(p=>p.id) : Array.from(selected), session_token: token, package: usePackage }),
+        body: JSON.stringify({ photo_ids: usePackage ? photos.map(p => p.id) : Array.from(selected), session_token: token, package: usePackage }),
       })
       const d = await res.json()
       if (d.checkout_url) window.location.href = d.checkout_url
     } catch {}
-    finally { usePackage ? setPackageLoading(false) : setCheckoutLoading(false) }
+    finally { usePackage ? setPkgLoading(false) : setCheckoutLoading(false) }
   }
 
-  const paymentEnabled = settings?.payment_enabled ?? true
-  const watermarkEnabled = settings?.watermark_enabled ?? true
-  const pricePerPhoto = settings ? settings.price_per_photo_ore / 100 : 10
-  const packagePrice = settings ? settings.package_price_ore / 100 : 49
-  const packageEnabled = settings?.package_enabled ?? false
-  const browseAllEnabled = settings?.browse_all_enabled ?? false
-
-  function getPhotoUrl(photo: Photo) {
-    // If payment disabled OR watermark disabled → show original (no watermark)
-    if (!paymentEnabled || !watermarkEnabled) return photo.public_url
-    // Otherwise show watermarked version
-    return photo.watermark_url ?? photo.public_url
-  }
-
-  /** Download label — shows correct text based on settings */
-  function freeDownloadLabel(): { title: string; sub: string } {
-    if (!paymentEnabled) return { title: 'Ladda ner alla', sub: 'Full kvalitet · Gratis' }
-    if (watermarkEnabled) return { title: 'Ladda ner gratis', sub: 'Med vattenstämpel' }
-    return { title: 'Ladda ner alla', sub: 'Gratis' }
-  }
-
-  /** Free download endpoint */
-  function freeDownloadUrl() {
-    if (!paymentEnabled) {
-      return `${API_URL}/download-free-original?ids=${photos.map(p=>p.id).join(',')}`
-    }
-    return `${API_URL}/download-free?ids=${photos.map(p=>p.id).join(',')}`
-  }
+  const payEnabled = ev?.payment_enabled ?? true
+  const wmEnabled = ev?.watermark_enabled ?? true
+  const pricePerPhoto = ev ? ev.price_per_photo_ore / 100 : 10
+  const pkgPrice = ev ? ev.package_price_ore / 100 : 49
+  const pkgEnabled = ev?.package_enabled ?? false
+  const browseAll = ev?.browse_all_enabled ?? false
 
   const displayPhotos = filterFavs
-    ? (showAll ? allPhotos : photos).filter(p => favorites.has(p.id))
+    ? (showAll ? allPhotos : photos).filter(p => favs.has(p.id))
     : (showAll ? allPhotos : photos)
 
-  const lightboxIdx = lightbox ? displayPhotos.findIndex(p => p.id === lightbox.id) : -1
+  const freeLabel = !payEnabled ? { title: 'Ladda ner alla', sub: 'Full kvalitet · Gratis' }
+    : wmEnabled ? { title: 'Ladda ner gratis', sub: 'Med vattenstämpel' }
+    : { title: 'Ladda ner alla', sub: 'Gratis' }
+
+  const freeHref = !payEnabled
+    ? `${API_URL}/download-free-original?ids=${photos.map(p => p.id).join(',')}`
+    : `${API_URL}/download-free?ids=${photos.map(p => p.id).join(',')}`
 
   if (loading) return (
-    <div className="min-h-screen bg-white flex items-center justify-center">
-      <div className="text-center">
-        <div className="w-5 h-5 border-2 border-neutral-200 border-t-neutral-900 rounded-full animate-spin mx-auto mb-3" />
-        <p className="text-sm text-neutral-500">Laddar dina foton…</p>
-      </div>
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)' }}>
+      <div className="ps-spin" style={{ width: 28, height: 28, borderWidth: 3 }} />
     </div>
   )
 
-  const dlLabel = freeDownloadLabel()
-  const showFreeDownload = !paymentEnabled || watermarkEnabled
-
   return (
-    <div className="min-h-screen bg-white flex flex-col">
-      {/* Topbar */}
-      <div className="h-[52px] border-b border-neutral-100 flex items-center justify-between px-4 sticky top-0 bg-white/95 backdrop-blur z-40">
-        <Link href="/" className="flex items-center gap-2">
-          <div className="w-6 h-6 bg-neutral-900 rounded-lg flex items-center justify-center">
-            <svg className="w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
-            </svg>
-          </div>
-          <span className="text-sm font-bold text-neutral-900">PixSnap</span>
+    <div style={{ minHeight: '100vh', background: 'var(--bg)' }}>
+      {/* ── HEADER ── */}
+      <div style={{ background: 'var(--grad)', padding: '40px 20px 80px', textAlign: 'center', position: 'relative', overflow: 'hidden' }}>
+        <div style={{ position: 'absolute', top: -40, right: -40, width: 160, height: 160, borderRadius: '50%', background: 'rgba(255,255,255,0.07)', pointerEvents: 'none' }} />
+        <div style={{ position: 'absolute', bottom: -20, left: -20, width: 100, height: 100, borderRadius: '50%', background: 'rgba(255,255,255,0.05)', pointerEvents: 'none' }} />
+
+        <Link href="/" style={{ display: 'inline-flex', alignItems: 'center', gap: 7, textDecoration: 'none', marginBottom: 20, color: 'rgba(255,255,255,0.8)' }}>
+          <div style={{ width: 22, height: 22, borderRadius: 6, background: 'rgba(255,255,255,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white' }}>{PS_LOGO}</div>
+          <span style={{ fontSize: 12, fontWeight: 600 }}>PixSnap</span>
         </Link>
-        <div className="flex items-center gap-2">
-          {favorites.size > 0 && (
-            <button onClick={() => setShowThanksCard(true)}
-              className="flex items-center gap-1.5 text-xs font-semibold bg-rose-50 text-rose-600 border border-rose-100 px-3 py-1.5 rounded-xl hover:bg-rose-100 transition-colors">
-              💌 Tackkort
-            </button>
-          )}
-          {settings?.slug && (
-            <Link href={`/event/${settings.slug}`} className="text-xs text-neutral-500 hover:text-neutral-900 transition-colors border border-neutral-200 px-3 py-1.5 rounded-xl">
-              Ny sökning
-            </Link>
+
+        {photos.length > 0 ? (
+          <>
+            <div style={{ width: 60, height: 60, borderRadius: '50%', background: 'rgba(255,255,255,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 14px', animation: 'bounceIn .6s ease .3s both' }}>
+              <svg width="26" height="26" viewBox="0 0 26 26" fill="none"><path d="M4 13l6 6 12-12" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+            </div>
+            <h1 style={{ fontSize: 22, fontWeight: 800, color: 'white', marginBottom: 5, letterSpacing: '-0.02em' }}>Dina foton är redo!</h1>
+            <p style={{ fontSize: 14, color: 'rgba(255,255,255,0.75)', marginBottom: 18 }}>
+              Vi hittade foton av dig från {ev?.name}
+            </p>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0 }}>
+              {[
+                { n: photoCounter, l: 'Foton hittade' },
+                { n: '~30s', l: 'Leveranstid' },
+                { n: '97%', l: 'Matchning' },
+              ].map((s, i) => (
+                <div key={s.l} style={{ textAlign: 'center', padding: '0 20px', borderRight: i < 2 ? '1px solid rgba(255,255,255,0.2)' : 'none' }}>
+                  <div style={{ fontSize: 26, fontWeight: 900, color: 'white', letterSpacing: '-0.03em', lineHeight: 1 }}>{s.n}</div>
+                  <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.65)', marginTop: 3 }}>{s.l}</div>
+                </div>
+              ))}
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={{ width: 56, height: 56, borderRadius: '50%', background: 'rgba(255,255,255,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 14px' }}>
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="8" stroke="white" strokeWidth="1.8"/><path d="M17 17l4 4" stroke="white" strokeWidth="1.8" strokeLinecap="round"/><path d="M8 11h6M11 8v6" stroke="white" strokeWidth="1.6" strokeLinecap="round"/></svg>
+            </div>
+            <h1 style={{ fontSize: 20, fontWeight: 800, color: 'white', marginBottom: 6 }}>Inga foton hittades</h1>
+            <p style={{ fontSize: 14, color: 'rgba(255,255,255,0.75)' }}>Prova med bättre ljussättning</p>
+          </>
+        )}
+      </div>
+
+      {/* ── CONTENT (overlaps header) ── */}
+      <div style={{ maxWidth: 640, margin: '0 auto', padding: '0 16px', transform: 'translateY(-60px)' }}>
+        <div style={{ background: 'var(--surface)', border: '1px solid #EAEDF4', borderRadius: 24, boxShadow: '0 4px 32px rgba(0,0,0,0.1)', overflow: 'hidden' }}>
+
+          {photos.length === 0 ? (
+            <div style={{ padding: '40px 24px', textAlign: 'center' }}>
+              {ev?.slug && (
+                <Link href={`/event/${ev.slug}`} className="ps-btn ps-btn-primary ps-btn-sm" style={{ textDecoration: 'none' }}>
+                  Försök igen
+                </Link>
+              )}
+            </div>
+          ) : (
+            <>
+              {/* Toolbar */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '14px 16px', borderBottom: '1px solid #EAEDF4', flexWrap: 'wrap' }}>
+                {favs.size > 0 && (
+                  <button onClick={() => setShowThanks(true)} className="ps-btn ps-btn-secondary ps-btn-sm" style={{ flex: 1, justifyContent: 'center', minWidth: 110 }}>
+                    Tackkort
+                  </button>
+                )}
+                {ev?.slug && (
+                  <Link href={`/event/${ev.slug}`} className="ps-btn ps-btn-secondary ps-btn-sm" style={{ textDecoration: 'none', flex: 1, justifyContent: 'center', minWidth: 110 }}>
+                    Ny sökning
+                  </Link>
+                )}
+              </div>
+
+              {/* Filter bar */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '10px 16px', borderBottom: '1px solid #EAEDF4', flexWrap: 'wrap' }}>
+                {browseAll && (
+                  <>
+                    <button onClick={() => setShowAll(false)} className={`ps-btn ps-btn-sm ${!showAll ? 'ps-btn-primary' : 'ps-btn-ghost'}`} style={{ fontSize: 12 }}>
+                      Mina ({photos.length})
+                    </button>
+                    <button onClick={() => setShowAll(true)} className={`ps-btn ps-btn-sm ${showAll ? 'ps-btn-primary' : 'ps-btn-ghost'}`} style={{ fontSize: 12 }}>
+                      Alla ({allPhotos.length})
+                    </button>
+                  </>
+                )}
+                {favs.size > 0 && (
+                  <button onClick={() => setFilterFavs(!filterFavs)} className={`ps-btn ps-btn-sm ${filterFavs ? 'ps-btn-danger' : 'ps-btn-ghost'}`} style={{ fontSize: 12 }}>
+                    Favoriter ({favs.size})
+                  </button>
+                )}
+                {payEnabled && (
+                  <button onClick={() => setSelected(new Set(photos.map(p => p.id)))} style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text-3)', background: 'none', border: 'none', cursor: 'pointer' }}>
+                    Välj alla
+                  </button>
+                )}
+              </div>
+
+              {/* Package banner */}
+              {payEnabled && pkgEnabled && photos.length > 1 && (
+                <div style={{ margin: '12px 14px', background: 'var(--text-1)', borderRadius: 14, padding: '14px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                  <div>
+                    <p style={{ fontSize: 13, fontWeight: 700, color: 'white' }}>Alla {photos.length} foton</p>
+                    <p style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)', marginTop: 1 }}>
+                      Spara {Math.max(0, Math.round(photos.length * pricePerPhoto - pkgPrice))} kr vs styckpris
+                    </p>
+                  </div>
+                  <button onClick={() => checkout(true)} disabled={pkgLoading} className="ps-btn ps-btn-sm" style={{ background: 'white', color: 'var(--text-1)', display: 'flex', alignItems: 'center', gap: 5 }}>
+                    {pkgLoading && <div className="ps-spin ps-spin-sm" />}
+                    {pkgPrice} kr
+                  </button>
+                </div>
+              )}
+
+              {/* Buy bar */}
+              {payEnabled && selected.size > 0 && (
+                <div style={{ position: 'sticky', top: 0, zIndex: 30, background: 'rgba(248,249,252,0.95)', backdropFilter: 'blur(16px)', padding: '10px 16px', borderBottom: '1px solid #EAEDF4', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                  <button onClick={() => setSelected(new Set())} style={{ fontSize: 12, color: 'var(--text-3)', background: 'none', border: 'none', cursor: 'pointer' }}>
+                    Avmarkera ({selected.size})
+                  </button>
+                  <button onClick={() => checkout(false)} disabled={checkoutLoading} className="ps-btn ps-btn-primary ps-btn-sm" style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                    {checkoutLoading && <div className="ps-spin ps-spin-sm ps-spin-white" />}
+                    Köp {selected.size} st · {(selected.size * pricePerPhoto).toFixed(0)} kr
+                  </button>
+                </div>
+              )}
+
+              {/* Photo grid */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 1 }}>
+                {displayPhotos.map((photo, idx) => {
+                  const isSel = selected.has(photo.id)
+                  const isFav = favs.has(photo.id)
+                  return (
+                    <div key={photo.id} style={{ aspectRatio: '1', overflow: 'hidden', cursor: 'pointer', position: 'relative', background: '#F2F4FA' }}
+                      onClick={() => setLightbox({ photo, idx })}>
+                      <img
+                        src={dispUrl(photo, payEnabled, wmEnabled)}
+                        alt={`Foto ${idx + 1}`}
+                        style={{ width: '100%', height: '100%', objectFit: 'cover', transition: 'transform .25s', display: 'block' }}
+                        onError={e => { (e.currentTarget as HTMLImageElement).src = photo.public_url }}
+                        onMouseEnter={e => (e.currentTarget as HTMLImageElement).style.transform = 'scale(1.04)'}
+                        onMouseLeave={e => (e.currentTarget as HTMLImageElement).style.transform = 'scale(1)'}
+                      />
+                      {/* Fav button */}
+                      <button onClick={e => toggleFav(photo.id, e)} style={{ position: 'absolute', top: 6, right: 6, width: 28, height: 28, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: isFav ? 'var(--danger)' : 'rgba(0,0,0,0.3)', border: 'none', cursor: 'pointer', transition: 'all .18s' }}>
+                        <svg viewBox="0 0 14 14" fill={isFav ? 'white' : 'none'} stroke="white" strokeWidth={1.8} style={{ width: 11, height: 11 }}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M2.5 4.5a2.5 2.5 0 015 0M12 4.5a2.5 2.5 0 00-4.5-1.5L7 3.5l-.5-.5A2.5 2.5 0 002 5c0 1 .5 2 1.5 3L7 11.5l3.5-3.5c1-1 1.5-2 1.5-3z" />
+                        </svg>
+                      </button>
+                      {/* Select button */}
+                      {payEnabled && (
+                        <button onClick={e => toggleSel(photo.id, e)} style={{ position: 'absolute', top: 6, left: 6, width: 22, height: 22, borderRadius: '50%', border: `2px solid ${isSel ? 'transparent' : 'rgba(255,255,255,0.7)'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', background: isSel ? 'var(--brand)' : 'rgba(0,0,0,0.25)', cursor: 'pointer', transition: 'all .18s' }}>
+                          {isSel && <svg viewBox="0 0 10 10" fill="none" style={{ width: 8, height: 8 }}><path d="M2 5l2.5 2.5 3.5-3.5" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                        </button>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+
+              {/* Download section */}
+              {(!payEnabled || wmEnabled) && (
+                <div style={{ padding: '14px 16px', borderTop: '1px solid #EAEDF4', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                  <div>
+                    <p style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-1)' }}>{freeLabel.title}</p>
+                    <p style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 1 }}>{freeLabel.sub}</p>
+                  </div>
+                  {mobile ? (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, justifyContent: 'flex-end', maxWidth: 170 }}>
+                      {photos.slice(0, 5).map((p, i) => (
+                        <a key={p.id} href={dispUrl(p, payEnabled, wmEnabled)} download={`pixsnap_${i + 1}.jpg`} target="_blank" rel="noopener noreferrer"
+                          style={{ fontSize: 10, background: 'var(--grad)', color: 'white', padding: '4px 8px', borderRadius: 7, fontWeight: 700, textDecoration: 'none' }}>
+                          #{i + 1}
+                        </a>
+                      ))}
+                      {photos.length > 5 && <span style={{ fontSize: 10, color: 'var(--text-3)', alignSelf: 'center' }}>+{photos.length - 5}</span>}
+                    </div>
+                  ) : (
+                    <a href={freeHref} download className="ps-btn ps-btn-secondary ps-btn-sm" style={{ textDecoration: 'none' }}>
+                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 2v6M3.5 6l2.5 2.5L8.5 6M1 10h10" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                      Zip
+                    </a>
+                  )}
+                </div>
+              )}
+
+              {/* Email */}
+              <div style={{ padding: '14px 16px', borderTop: '1px solid #EAEDF4' }}>
+                {!emailSent ? (
+                  <>
+                    <p style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-1)', marginBottom: 3 }}>Spara gallerilänken</p>
+                    <p style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 10 }}>Skicka länken till din inbox</p>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="din@email.se" className="ps-input" style={{ flex: 1, fontSize: 13 }} />
+                      <button onClick={async () => {
+                        setEmailLoading(true)
+                        try { await fetch(`${API_URL}/send-email`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session_token: token, email }) }); setEmailSent(true); showToast('Email skickat!') } catch {}
+                        setEmailLoading(false)
+                      }} disabled={!email || emailLoading} className="ps-btn ps-btn-primary ps-btn-sm" style={{ display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0 }}>
+                        {emailLoading && <div className="ps-spin ps-spin-sm ps-spin-white" />}
+                        Skicka
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <div style={{ background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.18)', borderRadius: 10, padding: '10px 14px', fontSize: 13, fontWeight: 700, color: '#16a34a' }}>
+                    Email skickat!
+                  </div>
+                )}
+              </div>
+
+              <div style={{ padding: '12px 16px', borderTop: '1px solid #EAEDF4', textAlign: 'center', fontSize: 11, color: 'var(--text-3)' }}>
+                Foton tillgängliga i 30 dagar ·{' '}
+                <Link href="/privacy" style={{ color: 'var(--brand)', textDecoration: 'none' }}>Integritetspolicy</Link>
+              </div>
+            </>
           )}
         </div>
       </div>
 
-      <main className="flex-1 w-full max-w-2xl mx-auto px-4 py-6">
-        {photos.length === 0 ? (
-          <div className="text-center py-20">
-            <p className="text-4xl mb-4">😕</p>
-            <h1 className="text-xl font-bold text-neutral-900 mb-2">Inga foton hittades</h1>
-            <p className="text-sm text-neutral-500 mb-6">Prova med en tydligare selfie.</p>
-            {settings?.slug && <Link href={`/event/${settings.slug}`} className="inline-flex bg-neutral-900 text-white text-sm font-bold px-6 py-3 rounded-xl hover:bg-neutral-700 transition-colors">Försök igen</Link>}
-          </div>
-        ) : (
-          <>
-            {/* Header */}
-            <div className="text-center mb-5">
-              <div className="inline-flex items-center gap-2 bg-green-50 border border-green-100 rounded-full px-4 py-1.5 text-xs font-bold text-green-700 mb-2">
-                <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
-                Hittade {photos.length} foto{photos.length !== 1 ? 'n' : ''} av dig
-              </div>
-              {!paymentEnabled && (
-                <div className="mt-2 inline-flex items-center gap-1.5 bg-blue-50 border border-blue-100 rounded-full px-3 py-1 text-xs font-medium text-blue-700">
-                  🎁 Gratis — ladda ner i full kvalitet
-                </div>
-              )}
-            </div>
-
-            {/* Filter bar */}
-            <div className="flex items-center gap-2 mb-4 flex-wrap">
-              {browseAllEnabled && (
-                <>
-                  <button onClick={() => setShowAll(false)} className={`text-xs font-bold px-3 py-1.5 rounded-xl transition-all ${!showAll ? 'bg-neutral-900 text-white' : 'bg-neutral-100 text-neutral-500 hover:bg-neutral-200'}`}>
-                    Mina ({photos.length})
-                  </button>
-                  <button onClick={() => setShowAll(true)} className={`text-xs font-bold px-3 py-1.5 rounded-xl transition-all ${showAll ? 'bg-neutral-900 text-white' : 'bg-neutral-100 text-neutral-500 hover:bg-neutral-200'}`}>
-                    Alla ({allPhotos.length})
-                  </button>
-                </>
-              )}
-              {favorites.size > 0 && (
-                <button onClick={() => setFilterFavs(!filterFavs)} className={`text-xs font-bold px-3 py-1.5 rounded-xl transition-all flex items-center gap-1 ${filterFavs ? 'bg-rose-500 text-white' : 'bg-rose-50 text-rose-600 border border-rose-100'}`}>
-                  ❤️ Favoriter ({favorites.size})
-                </button>
-              )}
-              <div className="ml-auto flex items-center gap-2">
-                {paymentEnabled && <button onClick={() => setSelected(new Set(photos.map(p=>p.id)))} className="text-xs text-neutral-400 hover:text-neutral-700 transition-colors">Välj alla</button>}
-              </div>
-            </div>
-
-            {/* Package banner */}
-            {paymentEnabled && packageEnabled && photos.length > 0 && (
-              <div className="bg-neutral-900 text-white rounded-2xl p-4 mb-4 flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-sm font-bold">Alla {photos.length} foton</p>
-                  <p className="text-xs text-white/50 mt-0.5">Spara {Math.max(0, photos.length * pricePerPhoto - packagePrice)} kr</p>
-                </div>
-                <button onClick={() => handleCheckout(true)} disabled={packageLoading}
-                  className="bg-white text-neutral-900 text-sm font-bold px-4 py-2 rounded-xl hover:bg-neutral-100 transition-colors disabled:opacity-50 flex items-center gap-1.5">
-                  {packageLoading && <span className="w-3.5 h-3.5 border-2 border-neutral-400 border-t-neutral-900 rounded-full animate-spin" />}
-                  {packagePrice} kr
-                </button>
-              </div>
-            )}
-
-            {/* Buy bar */}
-            {paymentEnabled && selected.size > 0 && (
-              <div className="sticky top-[52px] z-30 bg-white/95 backdrop-blur border-b border-neutral-100 py-3 mb-4 flex items-center justify-between gap-3">
-                <button onClick={() => setSelected(new Set())} className="text-xs text-neutral-500 hover:text-neutral-800">Avmarkera ({selected.size})</button>
-                <button onClick={() => handleCheckout(false)} disabled={checkoutLoading}
-                  className="bg-neutral-900 text-white text-xs font-bold px-4 py-2 rounded-xl hover:bg-neutral-700 disabled:opacity-50 flex items-center gap-1.5">
-                  {checkoutLoading && <span className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />}
-                  Köp {selected.size} st · {(selected.size * pricePerPhoto).toFixed(0)} kr
-                </button>
-              </div>
-            )}
-
-            {/* Grid — full width on mobile, 3 col on desktop */}
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-6">
-              {displayPhotos.map((photo, idx) => {
-                const isSelected = selected.has(photo.id)
-                const isFav = favorites.has(photo.id)
-                return (
-                  <div key={photo.id}
-                    className="relative aspect-square rounded-xl overflow-hidden bg-neutral-100 cursor-pointer group"
-                    onClick={() => setLightbox(photo)}>
-                    <Image
-                      src={getPhotoUrl(photo)}
-                      alt={`Foto ${idx+1}`}
-                      fill
-                      className="object-cover transition-transform duration-300 group-hover:scale-[1.03]"
-                      sizes="(max-width:640px) 50vw, 33vw"
-                      unoptimized
-                    />
-                    <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors" />
-
-                    {/* Favorite button */}
-                    <button onClick={e => toggleFavorite(photo.id, e)}
-                      className={`absolute top-2 right-2 w-8 h-8 rounded-full flex items-center justify-center transition-all ${isFav ? 'bg-rose-500 scale-100' : 'bg-black/30 opacity-0 group-hover:opacity-100 scale-90'}`}>
-                      <svg className="w-3.5 h-3.5 text-white" viewBox="0 0 24 24" fill={isFav ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
-                      </svg>
-                    </button>
-
-                    {/* Select button (payment enabled) */}
-                    {paymentEnabled && (
-                      <button onClick={e => toggleSelect(photo.id, e)}
-                        className={`absolute top-2 left-2 w-7 h-7 rounded-full border-2 flex items-center justify-center transition-all ${isSelected ? 'bg-neutral-900 border-neutral-900 scale-100' : 'bg-black/20 border-white/60 opacity-0 group-hover:opacity-100 scale-90'}`}>
-                        {isSelected && <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>}
-                      </button>
-                    )}
-                    <span className="absolute bottom-1.5 left-1.5 text-[9px] text-white/50 font-mono">{idx+1}</span>
-                  </div>
-                )
-              })}
-            </div>
-
-            {/* Download section */}
-            {showFreeDownload && (
-              <div className="bg-neutral-50 border border-neutral-100 rounded-2xl p-4 mb-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-sm font-bold text-neutral-900">{dlLabel.title}</p>
-                    <p className="text-xs text-neutral-500 mt-0.5">{dlLabel.sub}</p>
-                  </div>
-                  {/* On mobile: show individual download buttons per photo. On desktop: zip */}
-                  {mobile ? (
-                    <div className="flex flex-col items-end gap-2">
-                      <p className="text-[11px] text-neutral-400">Tryck på ett foto för att ladda ner</p>
-                      <div className="flex flex-wrap gap-1.5 justify-end max-w-[180px]">
-                        {photos.slice(0, 6).map((p, i) => (
-                          <a
-                            key={p.id}
-                            href={!paymentEnabled || !watermarkEnabled ? p.public_url : (p.watermark_url ?? p.public_url)}
-                            download={`pixsnap_foto_${i+1}.jpg`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-[10px] bg-neutral-900 text-white px-2 py-1 rounded-lg font-bold hover:bg-neutral-700 transition-colors"
-                          >
-                            #{i+1}
-                          </a>
-                        ))}
-                        {photos.length > 6 && (
-                          <span className="text-[10px] text-neutral-400 self-center">+{photos.length - 6} till</span>
-                        )}
-                      </div>
-                    </div>
-                  ) : (
-                    <a
-                      href={freeDownloadUrl()}
-                      download
-                      className={`text-xs font-bold px-4 py-2 rounded-xl transition-colors flex items-center gap-1.5 ${!paymentEnabled ? 'bg-neutral-900 text-white hover:bg-neutral-700' : 'text-neutral-600 border border-neutral-200 hover:bg-white hover:border-neutral-300'}`}
-                    >
-                      ↓ Zip
-                    </a>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* Email save link */}
-            {!emailSent ? (
-              <div className="bg-neutral-50 border border-neutral-100 rounded-2xl p-4">
-                <p className="text-sm font-bold text-neutral-900 mb-0.5">Spara gallerilänken</p>
-                <p className="text-xs text-neutral-500 mb-3">Skicka länken till din inbox</p>
-                <div className="flex gap-2">
-                  <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="din@email.se" className="input flex-1 text-sm" />
-                  <button onClick={async () => {
-                    setEmailLoading(true)
-                    try { await fetch(`${API_URL}/send-email`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ session_token: token, email }) }); setEmailSent(true) } catch {}
-                    setEmailLoading(false)
-                  }} disabled={!email || emailLoading} className="bg-neutral-900 text-white text-xs font-bold px-4 py-2 rounded-xl hover:bg-neutral-700 disabled:opacity-40 flex items-center gap-1.5 flex-shrink-0">
-                    {emailLoading && <span className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />}
-                    Skicka
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="bg-green-50 border border-green-100 rounded-2xl p-4">
-                <p className="text-sm font-bold text-green-700">Email skickat! ✓</p>
-              </div>
-            )}
-          </>
-        )}
-      </main>
-
-      {/* Lightbox */}
+      {/* ── LIGHTBOX ── */}
       {lightbox && (
-        <div className="fixed inset-0 bg-black/92 flex items-center justify-center z-50 p-4" onClick={() => setLightbox(null)}>
-          <div className="relative max-w-2xl w-full" onClick={e => e.stopPropagation()}>
-            <button onClick={() => setLightbox(null)} className="absolute -top-10 right-0 text-white/50 hover:text-white text-sm">Stäng ✕</button>
-            <Image src={getPhotoUrl(lightbox)} alt="Foto" width={900} height={900} className="w-full rounded-2xl object-contain max-h-[78vh]" unoptimized />
-            <div className="flex items-center justify-between mt-4">
-              <button onClick={() => lightboxIdx > 0 && setLightbox(displayPhotos[lightboxIdx-1])} disabled={lightboxIdx<=0}
-                className="text-white/50 hover:text-white disabled:opacity-20 px-4 py-2 text-sm">← Föregående</button>
-              <div className="flex items-center gap-2">
-                <button onClick={e => toggleFavorite(lightbox.id, e as any)}
-                  className={`w-8 h-8 rounded-full flex items-center justify-center ${favorites.has(lightbox.id) ? 'bg-rose-500' : 'bg-white/10 hover:bg-white/20'}`}>
-                  <svg className="w-4 h-4 text-white" viewBox="0 0 24 24" fill={favorites.has(lightbox.id) ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.88)', backdropFilter: 'blur(8px)', zIndex: 999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}
+          onClick={() => setLightbox(null)}>
+          <div style={{ maxWidth: '88vw', maxHeight: '88vh', position: 'relative' }} onClick={e => e.stopPropagation()}>
+            <button onClick={() => setLightbox(null)} style={{ position: 'absolute', top: -38, right: 0, background: 'none', border: 'none', color: 'rgba(255,255,255,0.5)', cursor: 'pointer', fontSize: 13, fontFamily: 'Inter,sans-serif' }}>
+              Stäng ✕
+            </button>
+            <img
+              src={dispUrl(lightbox.photo, payEnabled, wmEnabled)}
+              alt="Foto"
+              style={{ maxWidth: '88vw', maxHeight: '80vh', borderRadius: 14, objectFit: 'contain', display: 'block' }}
+              onError={e => { (e.currentTarget as HTMLImageElement).src = lightbox.photo.public_url }}
+            />
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 10 }}>
+              <button onClick={() => {
+                const i = Math.max(0, lightbox.idx - 1)
+                setLightbox({ photo: displayPhotos[i], idx: i })
+              }} disabled={lightbox.idx === 0} style={{ background: 'none', border: 'none', color: lightbox.idx === 0 ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.65)', cursor: 'pointer', fontFamily: 'Inter,sans-serif', fontSize: 13 }}>
+                ← Föregående
+              </button>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button onClick={e => toggleFav(lightbox.photo.id, e as any)} style={{ width: 34, height: 34, borderRadius: '50%', border: 'none', cursor: 'pointer', background: favs.has(lightbox.photo.id) ? 'var(--danger)' : 'rgba(255,255,255,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <svg viewBox="0 0 14 14" fill={favs.has(lightbox.photo.id) ? 'white' : 'none'} stroke="white" strokeWidth={1.8} style={{ width: 12, height: 12 }}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M2.5 4.5a2.5 2.5 0 015 0M12 4.5a2.5 2.5 0 00-4.5-1.5L7 3.5l-.5-.5A2.5 2.5 0 002 5c0 1 .5 2 1.5 3L7 11.5l3.5-3.5c1-1 1.5-2 1.5-3z" />
                   </svg>
                 </button>
-                {/* Direct download in lightbox */}
-                <a
-                  href={getPhotoUrl(lightbox)}
-                  download={`pixsnap_foto_${lightboxIdx+1}.jpg`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="px-4 py-2 rounded-xl text-sm font-bold bg-white/10 text-white hover:bg-white/20 flex items-center gap-1.5"
-                  onClick={e => e.stopPropagation()}
-                >
-                  ↓ Ladda ner
+                <a href={dispUrl(lightbox.photo, payEnabled, wmEnabled)} download={`pixsnap_${lightbox.idx + 1}.jpg`} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}
+                  style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 10, background: 'rgba(255,255,255,0.12)', color: 'white', fontWeight: 600, fontSize: 12, textDecoration: 'none' }}>
+                  Ladda ner
                 </a>
-                {paymentEnabled && (
-                  <button onClick={() => toggleSelect(lightbox.id)}
-                    className={`px-4 py-2 rounded-xl text-sm font-bold ${selected.has(lightbox.id) ? 'bg-white text-neutral-900' : 'bg-white/10 text-white hover:bg-white/20'}`}>
-                    {selected.has(lightbox.id) ? '✓ Markerad' : 'Markera för köp'}
+                {payEnabled && (
+                  <button onClick={() => toggleSel(lightbox.photo.id)} style={{ padding: '8px 14px', borderRadius: 10, border: 'none', cursor: 'pointer', background: selected.has(lightbox.photo.id) ? 'white' : 'rgba(255,255,255,0.12)', color: selected.has(lightbox.photo.id) ? 'var(--text-1)' : 'white', fontSize: 12, fontWeight: 600, fontFamily: 'Inter,sans-serif' }}>
+                    {selected.has(lightbox.photo.id) ? 'Markerad' : 'Markera'}
                   </button>
                 )}
               </div>
-              <button onClick={() => lightboxIdx < displayPhotos.length-1 && setLightbox(displayPhotos[lightboxIdx+1])} disabled={lightboxIdx>=displayPhotos.length-1}
-                className="text-white/50 hover:text-white disabled:opacity-20 px-4 py-2 text-sm">Nästa →</button>
+              <button onClick={() => {
+                const i = Math.min(displayPhotos.length - 1, lightbox.idx + 1)
+                setLightbox({ photo: displayPhotos[i], idx: i })
+              }} disabled={lightbox.idx >= displayPhotos.length - 1} style={{ background: 'none', border: 'none', color: lightbox.idx >= displayPhotos.length - 1 ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.65)', cursor: 'pointer', fontFamily: 'Inter,sans-serif', fontSize: 13 }}>
+                Nästa →
+              </button>
             </div>
-            <p className="text-center text-white/30 text-xs mt-2">{lightboxIdx+1} / {displayPhotos.length}</p>
+            <p style={{ textAlign: 'center', fontSize: 11, color: 'rgba(255,255,255,0.3)', marginTop: 8 }}>{lightbox.idx + 1} / {displayPhotos.length}</p>
           </div>
         </div>
       )}
 
-      {/* Tackkort modal */}
-      {showThanksCard && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={() => setShowThanksCard(false)}>
-          <div className="bg-white rounded-3xl p-6 w-full max-w-md shadow-2xl" onClick={e => e.stopPropagation()}>
-            <div className="text-center mb-6">
-              <span className="text-4xl">💌</span>
-              <h2 className="text-xl font-bold text-neutral-900 mt-2">Generera tackkort</h2>
-              <p className="text-sm text-neutral-500 mt-1">AI skriver ett personligt tackkort till fotografen</p>
+      {/* ── THANKS MODAL ── */}
+      {showThanks && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', backdropFilter: 'blur(6px)', zIndex: 999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}
+          onClick={() => setShowThanks(false)}>
+          <div style={{ background: 'var(--surface)', borderRadius: 22, padding: 26, width: '100%', maxWidth: 380, boxShadow: '0 20px 60px rgba(0,0,0,0.18)' }} onClick={e => e.stopPropagation()}>
+            <div style={{ textAlign: 'center', marginBottom: 20 }}>
+              <div style={{ width: 44, height: 44, borderRadius: '50%', background: 'linear-gradient(135deg, var(--danger), #EC4899)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 10px' }}>
+                <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M3 7.5a3.5 3.5 0 017 0M15.5 7.5a3.5 3.5 0 00-6.5-1.8L9 5.5l-.5-.8A3.5 3.5 0 002 7.5c0 1.5.7 3 2 4.5L9 16l5-4c1.3-1.5 2-3 2-4.5z" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              </div>
+              <h2 style={{ fontSize: 17, fontWeight: 700, color: 'var(--text-1)', marginBottom: 3 }}>AI Tackkort</h2>
+              <p style={{ fontSize: 12, color: 'var(--text-3)' }}>Generera ett personligt tackkort till fotografen</p>
             </div>
             {!thanksMsg ? (
-              <div className="space-y-4">
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                 <div>
-                  <label className="label">Ditt namn</label>
-                  <input type="text" value={thanksName} onChange={e => setThanksName(e.target.value)} placeholder="T.ex. Anna" className="input" />
+                  <label className="ps-label">Ditt namn</label>
+                  <input type="text" value={thanksName} onChange={e => setThanksName(e.target.value)} placeholder="T.ex. Anna" className="ps-input" />
                 </div>
-                <button onClick={generateThanksCard} disabled={!thanksName.trim() || thanksLoading}
-                  className="w-full bg-rose-500 text-white text-sm font-bold py-3.5 rounded-2xl hover:bg-rose-600 transition-colors disabled:opacity-40 flex items-center justify-center gap-2">
-                  {thanksLoading && <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />}
-                  {thanksLoading ? 'AI skriver…' : '✨ Generera tackkort'}
+                <button onClick={generateThanks} disabled={!thanksName.trim() || thanksLoading} className="ps-btn ps-btn-primary" style={{ width: '100%', justifyContent: 'center', padding: '12px', background: 'linear-gradient(135deg, var(--danger), #EC4899)' }}>
+                  {thanksLoading && <div className="ps-spin ps-spin-sm ps-spin-white" />}
+                  {thanksLoading ? 'AI skriver…' : 'Generera tackkort'}
                 </button>
               </div>
             ) : (
-              <div className="space-y-4">
-                <div className="bg-gradient-to-br from-rose-50 to-pink-50 border border-rose-100 rounded-2xl p-5 relative overflow-hidden">
-                  <div className="absolute top-3 right-3 text-2xl opacity-30">💕</div>
-                  <p className="text-sm text-neutral-700 leading-relaxed text-center italic">"{thanksMsg}"</p>
-                  <p className="text-xs text-neutral-500 text-center mt-3">— {thanksName}</p>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <div style={{ background: 'linear-gradient(135deg, #FFF0F8, #FDF4FF)', border: '1px solid rgba(236,72,153,0.15)', borderRadius: 14, padding: 18 }}>
+                  <p style={{ fontSize: 14, color: 'var(--text-1)', lineHeight: 1.7, textAlign: 'center', fontStyle: 'italic' }}>"{thanksMsg}"</p>
+                  <p style={{ fontSize: 12, color: 'var(--text-3)', textAlign: 'center', marginTop: 8 }}>— {thanksName}</p>
                 </div>
-                <div className="flex gap-2">
-                  <button onClick={() => { navigator.clipboard.writeText(thanksMsg) }} className="flex-1 text-xs border border-neutral-200 py-2.5 rounded-xl hover:bg-neutral-50 font-medium">📋 Kopiera</button>
-                  <button onClick={() => { setThanksMsg(''); setThanksName('') }} className="flex-1 text-xs border border-neutral-200 py-2.5 rounded-xl hover:bg-neutral-50 font-medium">🔄 Ny version</button>
-                  <button onClick={() => setShowThanksCard(false)} className="flex-1 bg-neutral-900 text-white text-xs py-2.5 rounded-xl hover:bg-neutral-700 font-medium">✓ Klar</button>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button onClick={() => { navigator.clipboard.writeText(thanksMsg); showToast('Kopierat!') }} className="ps-btn ps-btn-secondary ps-btn-sm" style={{ flex: 1 }}>Kopiera</button>
+                  <button onClick={() => { setThanksMsg(''); setThanksName('') }} className="ps-btn ps-btn-secondary ps-btn-sm" style={{ flex: 1 }}>Ny version</button>
+                  <button onClick={() => setShowThanks(false)} className="ps-btn ps-btn-primary ps-btn-sm" style={{ flex: 1 }}>Klar</button>
                 </div>
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* ── TOAST ── */}
+      {toast && (
+        <div className="ps-toast">
+          <div style={{ width: 20, height: 20, borderRadius: '50%', background: 'rgba(34,197,94,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 5l2.5 2.5 3.5-3.5" stroke="var(--success)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
+          </div>
+          {toast}
         </div>
       )}
     </div>

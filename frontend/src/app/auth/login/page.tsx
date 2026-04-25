@@ -3,6 +3,7 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
+import { PS_LOGO } from '@/components/layout/Navbar'
 
 export default function LoginPage() {
   const router = useRouter()
@@ -15,95 +16,93 @@ export default function LoginPage() {
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault()
-    setLoading(true)
-    setError(null)
+    setLoading(true); setError(null)
     const { error } = await supabase.auth.signInWithPassword({ email, password })
-    if (error) {
-      setError('Fel email eller lösenord.')
-      setLoading(false)
-    } else {
-      router.push('/dashboard')
-      router.refresh()
-    }
+    if (error) { setError('Fel e-post eller lösenord. Försök igen.'); setLoading(false) }
+    else { router.push('/dashboard'); router.refresh() }
   }
 
   return (
-    <div className="min-h-screen bg-white flex flex-col">
-      <nav className="h-[56px] border-b border-neutral-100 flex items-center px-6">
-        <Link href="/" className="flex items-center gap-2">
-          <div className="w-7 h-7 bg-neutral-900 rounded-lg flex items-center justify-center">
-            <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
-              <path strokeLinecap="round" strokeLinejoin="round" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
-            </svg>
+    <div style={{ minHeight: '100vh', background: 'var(--bg)', display: 'flex', flexDirection: 'column' }}>
+      {/* Top bar */}
+      <div style={{ height: 52, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 24px', borderBottom: '1px solid #EAEDF4', background: 'var(--surface)' }}>
+        <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: 8, textDecoration: 'none', color: 'var(--text-1)' }}>
+          <div style={{ width: 28, height: 28, borderRadius: 8, background: 'var(--grad)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white' }}>
+            {PS_LOGO}
           </div>
-          <span className="font-bold text-sm text-neutral-900">PixSnap</span>
+          <span style={{ fontWeight: 700, fontSize: 14 }}>PixSnap</span>
         </Link>
-      </nav>
+        <Link href="/auth/register" style={{ fontSize: 13, color: 'var(--text-3)', textDecoration: 'none' }}>
+          Inget konto? <strong style={{ color: 'var(--brand)' }}>Registrera dig</strong>
+        </Link>
+      </div>
 
-      <div className="flex-1 flex items-center justify-center px-6 py-16">
-        <div className="w-full max-w-[360px]">
-          <div className="text-center mb-8">
-            <h1 className="text-2xl font-bold text-neutral-900 mb-2">Välkommen tillbaka</h1>
-            <p className="text-sm text-neutral-500">Logga in för att fortsätta</p>
+      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+        <div style={{ width: '100%', maxWidth: 380 }}>
+          {/* Header */}
+          <div style={{ textAlign: 'center', marginBottom: 28 }}>
+            <div style={{ width: 48, height: 48, borderRadius: 14, background: 'var(--grad)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px', color: 'white' }}>
+              {PS_LOGO}
+            </div>
+            <h1 style={{ fontSize: 22, fontWeight: 800, color: 'var(--text-1)', letterSpacing: '-0.02em', marginBottom: 6 }}>
+              Välkommen tillbaka
+            </h1>
+            <p style={{ fontSize: 13, color: 'var(--text-3)' }}>Logga in på ditt PixSnap-konto</p>
           </div>
 
-          <form onSubmit={handleLogin} className="space-y-4">
-            <div>
-              <label className="block text-xs font-semibold text-neutral-500 uppercase tracking-wider mb-1.5">Email</label>
-              <input
-                type="email"
-                value={email}
-                onChange={e => setEmail(e.target.value)}
-                placeholder="du@exempel.se"
-                required
-                className="input"
-              />
-            </div>
-            <div>
-              <div className="flex items-center justify-between mb-1.5">
-                <label className="text-xs font-semibold text-neutral-500 uppercase tracking-wider">Lösenord</label>
-                <span className="text-xs text-neutral-400 cursor-pointer hover:text-neutral-600">Glömt lösenord?</span>
-              </div>
-              <div className="relative">
+          {/* Form card */}
+          <div className="ps-card glass-strong" style={{ padding: 28, borderRadius: 20 }}>
+            <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <div>
+                <label className="ps-label">E-postadress</label>
                 <input
-                  type={showPass ? 'text' : 'password'}
-                  value={password}
-                  onChange={e => setPassword(e.target.value)}
-                  placeholder="••••••••"
-                  required
-                  className="input pr-10"
+                  type="email" value={email} onChange={e => setEmail(e.target.value)}
+                  placeholder="du@exempel.se" required className="ps-input"
+                  autoComplete="email"
                 />
-                <button type="button" onClick={() => setShowPass(!showPass)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-600 transition-colors">
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              </div>
+
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                  <label className="ps-label" style={{ margin: 0 }}>Lösenord</label>
+                  <span style={{ fontSize: 12, color: 'var(--brand)', cursor: 'pointer' }}>Glömt lösenord?</span>
+                </div>
+                <div style={{ position: 'relative' }}>
+                  <input
+                    type={showPass ? 'text' : 'password'} value={password}
+                    onChange={e => setPassword(e.target.value)}
+                    placeholder="••••••••" required className="ps-input"
+                    style={{ paddingRight: 42 }}
+                    autoComplete="current-password"
+                  />
+                  <button type="button" onClick={() => setShowPass(!showPass)}
+                    style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-3)', padding: 0, display: 'flex' }}>
                     {showPass
-                      ? <path strokeLinecap="round" strokeLinejoin="round" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
-                      : <><path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></>
+                      ? <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 2l12 12M6.5 6.7A3 3 0 0011 10M4.5 4.6A7 7 0 001 8c1.3 2.5 3.9 4 7 4 1.1 0 2.1-.2 3-.6" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/><path d="M6.5 4.2C7 4.1 7.5 4 8 4c3.1 0 5.7 1.5 7 4a8 8 0 01-2 2.6" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/></svg>
+                      : <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M1 8c1.3-2.5 3.9-4 7-4s5.7 1.5 7 4c-1.3 2.5-3.9 4-7 4s-5.7-1.5-7-4z" stroke="currentColor" strokeWidth="1.3"/><circle cx="8" cy="8" r="2.5" stroke="currentColor" strokeWidth="1.3"/></svg>
                     }
-                  </svg>
-                </button>
+                  </button>
+                </div>
               </div>
-            </div>
 
-            {error && (
-              <div className="bg-red-50 border border-red-100 rounded-xl px-4 py-3">
-                <p className="text-sm text-red-600">{error}</p>
-              </div>
-            )}
+              {error && (
+                <div style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.18)', borderRadius: 10, padding: '10px 14px' }}>
+                  <p style={{ fontSize: 13, color: 'var(--danger)', margin: 0 }}>{error}</p>
+                </div>
+              )}
 
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full bg-neutral-900 text-white text-sm font-semibold py-3 rounded-xl hover:bg-neutral-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 mt-1">
-              {loading && <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />}
-              {loading ? 'Loggar in…' : 'Logga in'}
-            </button>
-          </form>
+              <button type="submit" disabled={loading} className="ps-btn ps-btn-primary" style={{ width: '100%', justifyContent: 'center', marginTop: 4 }}>
+                {loading && <span className="ps-spin ps-spin-sm ps-spin-white" />}
+                {loading ? 'Loggar in…' : 'Logga in'}
+              </button>
+            </form>
+          </div>
 
-          <p className="mt-6 text-center text-sm text-neutral-400">
+          <p style={{ textAlign: 'center', fontSize: 13, color: 'var(--text-3)', marginTop: 16 }}>
             Inget konto?{' '}
-            <Link href="/auth/register" className="text-neutral-900 font-semibold hover:underline">Skapa ett</Link>
+            <Link href="/auth/register" style={{ color: 'var(--brand)', fontWeight: 600, textDecoration: 'none' }}>
+              Skapa ett gratis
+            </Link>
           </p>
         </div>
       </div>

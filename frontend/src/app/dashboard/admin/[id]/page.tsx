@@ -4,7 +4,6 @@ import { useParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useDropzone } from 'react-dropzone'
 import { createClient } from '@/lib/supabase/client'
-import { Navbar } from '@/components/layout/Navbar'
 import { QRDisplay } from '@/components/ui/QRDisplay'
 import { PhotoGrid } from '@/components/ui/PhotoGrid'
 import { formatDate, getEventUrl } from '@/lib/utils'
@@ -12,6 +11,50 @@ import type { Event, Photo } from '@/types'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000'
 const PARALLEL = 5
+
+// 3D SVG icons — no emojis
+const UploadIcon = () => (
+  <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+    <rect x="3" y="7" width="22" height="16" rx="4" fill="url(#upBg)" opacity="0.9"/>
+    <path d="M14 20v-9M10 15l4-5 4 5" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+    <defs>
+      <linearGradient id="upBg" x1="3" y1="7" x2="25" y2="23" gradientUnits="userSpaceOnUse">
+        <stop stopColor="#4F6EF7"/><stop offset="1" stopColor="#7C3AED"/>
+      </linearGradient>
+    </defs>
+  </svg>
+)
+
+const CheckIcon3D = ({ size = 14 }: { size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 14 14" fill="none">
+    <circle cx="7" cy="7" r="6" fill="url(#ckBg)" opacity="0.15"/>
+    <path d="M4 7l2 2 4-4" stroke="url(#ckBg)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+    <defs>
+      <linearGradient id="ckBg" x1="1" y1="1" x2="13" y2="13" gradientUnits="userSpaceOnUse">
+        <stop stopColor="#22C55E"/><stop offset="1" stopColor="#16a34a"/>
+      </linearGradient>
+    </defs>
+  </svg>
+)
+
+const BellIcon = () => (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+    <path d="M8 2a5 5 0 00-5 5v3l-1.5 2h13L13 10V7a5 5 0 00-5-5z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round"/>
+    <path d="M6.5 14a1.5 1.5 0 003 0" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+  </svg>
+)
+
+const QRIcon = () => (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+    <rect x="1" y="1" width="5" height="5" rx="1" stroke="currentColor" strokeWidth="1.3"/>
+    <rect x="10" y="1" width="5" height="5" rx="1" stroke="currentColor" strokeWidth="1.3"/>
+    <rect x="1" y="10" width="5" height="5" rx="1" stroke="currentColor" strokeWidth="1.3"/>
+    <rect x="10" y="10" width="2" height="2" fill="currentColor"/>
+    <rect x="13" y="10" width="2" height="2" fill="currentColor"/>
+    <rect x="10" y="13" width="2" height="2" fill="currentColor"/>
+    <rect x="13" y="13" width="2" height="2" fill="currentColor"/>
+  </svg>
+)
 
 export default function AdminPage() {
   const { id } = useParams<{ id: string }>()
@@ -25,7 +68,7 @@ export default function AdminPage() {
   const [uploadTotal, setUploadTotal] = useState(0)
   const [uploadDone, setUploadDone] = useState(0)
   const [error, setError] = useState<string | null>(null)
-  const [tab, setTab] = useState<'photos' | 'settings' | 'stats'>('photos')
+  const [tab, setTab] = useState<'photos' | 'guests' | 'analytics' | 'settings'>('photos')
   const [stats, setStats] = useState<any>(null)
   const [deleting, setDeleting] = useState(false)
   const [publishing, setPublishing] = useState(false)
@@ -34,7 +77,7 @@ export default function AdminPage() {
   const [userId, setUserId] = useState('')
   const [saveMsg, setSaveMsg] = useState('')
 
-  // Settings
+  // Settings state
   const [pinCode, setPinCode] = useState('')
   const [expiresAt, setExpiresAt] = useState('')
   const [isActive, setIsActive] = useState(true)
@@ -74,7 +117,7 @@ export default function AdminPage() {
   }, [id, router, supabase])
 
   useEffect(() => {
-    if (tab === 'stats' && !stats && event) {
+    if ((tab === 'analytics' || tab === 'guests') && !stats && event) {
       fetch(`${API_URL}/stats/${event.id}`).then(r => r.json()).then(setStats).catch(console.error)
     }
   }, [tab, event, stats])
@@ -83,38 +126,26 @@ export default function AdminPage() {
     if (!event || acceptedFiles.length === 0) return
     setUploading(true); setError(null)
     setUploadTotal(acceptedFiles.length); setUploadDone(0); setUploadProgress(0)
-    let done = 0
-    const newPhotos: Photo[] = []
+    let done = 0; const newPhotos: Photo[] = []
 
     async function uploadFile(file: File) {
       try {
-        // Convert HEIC to JPEG client-side before upload for proper display
-        let uploadFile = file
-        const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
+        const ext = file.name.split('.').pop()?.toLowerCase() ?? 'jpg'
         const storageExt = (ext === 'heic' || ext === 'heif') ? 'jpg' : ext
         const fileName = `${event!.id}/${Date.now()}-${Math.random().toString(36).slice(2)}.${storageExt}`
-
-        const { error: storageError } = await supabase.storage.from('event-photos').upload(fileName, uploadFile)
-        if (storageError) throw new Error(storageError.message)
+        const { error: se } = await supabase.storage.from('event-photos').upload(fileName, file)
+        if (se) throw new Error(se.message)
         const { data: { publicUrl } } = supabase.storage.from('event-photos').getPublicUrl(fileName)
         const { data: photoRecord, error: dbError } = await supabase.from('photos')
           .insert({ event_id: event!.id, storage_path: fileName, public_url: publicUrl, processed: false })
           .select().single()
         if (dbError) throw new Error(dbError.message)
-
-        // Auto-call embed (generates watermark + indexes faces)
         fetch(`${API_URL}/embed`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            photo_id: photoRecord.id,
-            photo_url: publicUrl,
-            event_id: event!.id,
-            watermark_text: watermarkEnabled ? watermarkText : ''
-          }),
+          body: JSON.stringify({ photo_id: photoRecord.id, photo_url: publicUrl, event_id: event!.id, watermark_text: watermarkEnabled ? watermarkText : '' }),
         }).catch(console.error)
-
         newPhotos.push(photoRecord)
-      } catch (err) { console.error(`Fel vid uppladdning: ${(err as Error).message}`) }
+      } catch (err) { console.error((err as Error).message) }
       finally { done++; setUploadDone(done); setUploadProgress(Math.round((done / acceptedFiles.length) * 100)) }
     }
 
@@ -126,9 +157,7 @@ export default function AdminPage() {
   }, [event, supabase, watermarkText, watermarkEnabled])
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
-    onDrop,
-    accept: { 'image/*': ['.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif'] },
-    multiple: true,
+    onDrop, accept: { 'image/*': ['.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif'] }, multiple: true,
   })
 
   async function handleDelete(photo: Photo) {
@@ -138,384 +167,511 @@ export default function AdminPage() {
     setPhotos(prev => prev.filter(p => p.id !== photo.id))
   }
 
-  /** Publish and notify. forceResend=true allows sending again even if already sent */
   async function handlePublish(forceResend = false) {
     if (!event || !userId) return
-    const msg = forceResend
-      ? 'Skicka notifikationer IGEN till alla registrerade gäster?'
-      : 'Skicka notifikationer till alla registrerade gäster?'
-    if (!confirm(msg)) return
+    if (!confirm(forceResend ? 'Skicka notifikationer igen?' : 'Publicera och notifiera gäster?')) return
     setPublishing(true)
     try {
-      // If forcing resend, first reset notification_sent flag
-      if (forceResend) {
-        await supabase.from('events').update({ notification_sent: false }).eq('id', event.id)
-      }
-      const res = await fetch(`${API_URL}/publish`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ event_id: event.id, user_id: userId })
-      })
+      if (forceResend) await supabase.from('events').update({ notification_sent: false }).eq('id', event.id)
+      const res = await fetch(`${API_URL}/publish`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ event_id: event.id, user_id: userId }) })
       const data = await res.json()
       setPublishDone(true)
-      alert(`✅ ${data.message}`)
+      alert(data.message)
     } catch { alert('Något gick fel') }
     finally { setPublishing(false) }
-  }
-
-  async function handleDeleteEvent() {
-    if (!event || !userId) return
-    if (!confirm(`Radera "${event.name}" permanent? ALL data raderas.`)) return
-    setDeleting(true)
-    await fetch(`${API_URL}/event/${event.id}?user_id=${userId}`, { method: 'DELETE' })
-    router.push('/dashboard')
   }
 
   async function saveSettings() {
     if (!event) return
     setSavingSettings(true)
     await supabase.from('events').update({
-      pin_code: pinCode || null,
-      expires_at: expiresAt ? new Date(expiresAt).toISOString() : null,
-      is_active: isActive,
-      price_per_photo_ore: Math.round(pricePerPhoto * 100),
-      package_enabled: packageEnabled,
-      package_price_ore: Math.round(packagePrice * 100),
-      watermark_text: watermarkText || 'PixSnap',
-      watermark_enabled: watermarkEnabled,
-      payment_enabled: paymentEnabled,
-      photographer_name: photographerName || null,
-      browse_all_enabled: browseAll,
+      pin_code: pinCode || null, expires_at: expiresAt ? new Date(expiresAt).toISOString() : null,
+      is_active: isActive, price_per_photo_ore: Math.round(pricePerPhoto * 100),
+      package_enabled: packageEnabled, package_price_ore: Math.round(packagePrice * 100),
+      watermark_text: watermarkText || 'PixSnap', watermark_enabled: watermarkEnabled,
+      payment_enabled: paymentEnabled, photographer_name: photographerName || null, browse_all_enabled: browseAll,
     }).eq('id', event.id)
-    setSavingSettings(false)
-    setSaveMsg('Sparat!')
-    setTimeout(() => setSaveMsg(''), 2000)
+    setSavingSettings(false); setSaveMsg('Sparat!'); setTimeout(() => setSaveMsg(''), 2000)
   }
 
   if (!event) return (
-    <div className="min-h-screen bg-neutral-50"><Navbar />
-      <div className="flex items-center justify-center h-64">
-        <div className="w-5 h-5 border-2 border-neutral-300 border-t-neutral-900 rounded-full animate-spin" />
-      </div>
+    <div style={{minHeight:'50vh', display:'flex', alignItems:'center', justifyContent:'center'}}>
+      <div className="ps-spin" style={{width:32, height:32, borderWidth:3}}/>
     </div>
   )
 
   const eventUrl = getEventUrl(event.slug)
   const processedCount = photos.filter(p => p.processed).length
+  const daysActive = event.created_at ? Math.floor((Date.now() - new Date(event.created_at).getTime()) / 86400000) : 0
 
   const Toggle = ({ value, onChange, label, desc }: { value: boolean; onChange: (v: boolean) => void; label: string; desc?: string }) => (
-    <label className="flex items-center justify-between cursor-pointer">
+    <label style={{display:'flex', alignItems:'center', justifyContent:'space-between', cursor:'pointer'}}>
       <div>
-        <p className="text-sm font-semibold text-neutral-900">{label}</p>
-        {desc && <p className="text-xs text-neutral-500 mt-0.5">{desc}</p>}
+        <div style={{fontSize:14, fontWeight:600, color:'var(--text-1)'}}>{label}</div>
+        {desc && <div style={{fontSize:12, color:'var(--text-3)', marginTop:2}}>{desc}</div>}
       </div>
-      <button onClick={() => onChange(!value)}
-        className={`relative w-11 h-6 rounded-full transition-colors flex-shrink-0 ml-4 ${value ? 'bg-neutral-900' : 'bg-neutral-200'}`}>
-        <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${value ? 'translate-x-5' : ''}`} />
+      <button onClick={() => onChange(!value)} style={{
+        position:'relative', width:44, height:24, borderRadius:100, border:'none', cursor:'pointer', flexShrink:0, marginLeft:16,
+        background: value ? 'var(--grad)' : 'rgba(0,0,0,0.1)', transition:'background 0.2s',
+      }}>
+        <span style={{
+          position:'absolute', top:2, left:2, width:20, height:20, borderRadius:'50%', background:'white',
+          boxShadow:'0 1px 4px rgba(0,0,0,0.2)', transition:'transform 0.2s',
+          transform: value ? 'translateX(20px)' : 'none',
+          display:'block',
+        }}/>
       </button>
     </label>
   )
 
   return (
-    <div className="min-h-screen bg-neutral-50">
-      <Navbar />
-      <main className="max-w-5xl mx-auto px-4 sm:px-5 py-8 sm:py-10">
-        {/* Breadcrumb */}
-        <div className="flex items-center gap-2 text-xs text-neutral-400 mb-6">
-          <Link href="/dashboard" className="hover:text-neutral-700 transition-colors">Events</Link>
-          <span>/</span><span className="text-neutral-700 font-medium">{event.name}</span>
-        </div>
+    <div style={{fontFamily:'Inter,sans-serif'}}>
+      {/* GRADIENT HEADER */}
+      <div style={{background:'linear-gradient(135deg, #4F6EF7 0%, #7C3AED 100%)', borderRadius:20, padding:'28px 32px 32px', marginBottom:24, position:'relative', overflow:'hidden'}}>
+        {/* Decorative elements */}
+        <div style={{position:'absolute',top:-30,right:-30,width:120,height:120,borderRadius:'50%',background:'rgba(255,255,255,0.08)'}}/>
+        <div style={{position:'absolute',bottom:-20,left:60,width:80,height:80,borderRadius:'50%',background:'rgba(255,255,255,0.05)'}}/>
 
-        {/* Header */}
-        <div className="flex items-start justify-between mb-6 flex-wrap gap-3">
-          <div>
-            <div className="flex items-center gap-2 flex-wrap">
-              <h1 className="text-xl font-bold text-neutral-900">{event.name}</h1>
-              <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${isActive ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-600'}`}>
-                {isActive ? 'Aktivt' : 'Inaktivt'}
-              </span>
-              {event.pin_code && <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-semibold">🔒 PIN</span>}
-              {publishDone && <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-semibold">✓ Publicerat</span>}
-              {!paymentEnabled && <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full font-semibold">🎁 Gratis</span>}
-            </div>
-            <p className="text-sm text-neutral-500 mt-1">
-              {formatDate(event.date)} · {photos.length} foton · {processedCount} indexerade
-            </p>
+        <div style={{position:'relative',zIndex:1}}>
+          {/* Breadcrumb */}
+          <div style={{display:'flex', alignItems:'center', gap:8, fontSize:13, color:'rgba(255,255,255,0.6)', marginBottom:16}}>
+            <Link href="/dashboard" style={{color:'rgba(255,255,255,0.6)', textDecoration:'none'}}>Dashboard</Link>
+            <span>/</span>
+            <span style={{color:'rgba(255,255,255,0.9)', fontWeight:600}}>{event.name}</span>
           </div>
-          <div className="flex gap-2 flex-wrap">
-            <a href={eventUrl} target="_blank" rel="noopener noreferrer"
-              className="text-sm text-neutral-600 border border-neutral-200 bg-white px-4 py-2 rounded-xl hover:border-neutral-400 transition-colors font-medium">
-              Visa publik sida ↗
-            </a>
-            {/* Primary publish button */}
-            <button onClick={() => handlePublish(false)} disabled={publishing || publishDone}
-              className={`text-sm font-semibold px-4 py-2 rounded-xl transition-colors flex items-center gap-1.5 ${publishDone ? 'bg-neutral-100 text-neutral-400 cursor-default' : 'bg-neutral-900 text-white hover:bg-neutral-700'}`}>
-              {publishing && <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />}
-              {publishDone ? '✓ Publicerat' : '🔔 Publicera & notifiera'}
-            </button>
-            {/* Resend button — always visible after first publish */}
-            {publishDone && (
-              <button onClick={() => handlePublish(true)} disabled={publishing}
-                className="text-sm font-semibold px-4 py-2 rounded-xl border border-neutral-200 bg-white text-neutral-700 hover:border-neutral-400 transition-colors flex items-center gap-1.5">
-                {publishing && <span className="w-3.5 h-3.5 border-2 border-neutral-300 border-t-neutral-700 rounded-full animate-spin" />}
-                🔁 Skicka igen
+
+          <div style={{display:'flex', alignItems:'flex-start', justifyContent:'space-between', flexWrap:'wrap', gap:16, marginBottom:24}}>
+            <div>
+              <h1 style={{fontSize:24, fontWeight:800, color:'#fff', letterSpacing:'-0.025em', margin:'0 0 6px'}}>{event.name}</h1>
+              <div style={{display:'flex', alignItems:'center', gap:12, flexWrap:'wrap'}}>
+                <span style={{display:'flex', alignItems:'center', gap:5, fontSize:12, color:'rgba(255,255,255,0.7)'}}>
+                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><rect x="1" y="2" width="10" height="9" rx="2" stroke="rgba(255,255,255,0.7)" strokeWidth="1.2"/><path d="M4 1v2M8 1v2M1 5h10" stroke="rgba(255,255,255,0.7)" strokeWidth="1.2" strokeLinecap="round"/></svg>
+                  {event.date ? new Date(event.date).toLocaleDateString('sv-SE',{year:'numeric',month:'long',day:'numeric'}) : 'Inget datum'}
+                </span>
+                <span style={{display:'flex', alignItems:'center', gap:5, fontSize:12, color:'rgba(255,255,255,0.7)'}}>
+                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><circle cx="6" cy="6" r="5" stroke="rgba(255,255,255,0.7)" strokeWidth="1.2"/><path d="M6 3.5v3l2 1.5" stroke="rgba(255,255,255,0.7)" strokeWidth="1.2" strokeLinecap="round"/></svg>
+                  Aktivt i {daysActive} dagar
+                </span>
+                <span style={{display:'flex', alignItems:'center', gap:5, fontSize:12, color:'rgba(255,255,255,0.7)'}}>
+                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M3 5h6a2 2 0 012 2v2a2 2 0 01-2 2H3a2 2 0 01-2-2V7a2 2 0 012-2z" stroke="rgba(255,255,255,0.7)" strokeWidth="1.2"/></svg>
+                  {photos.length} foton
+                </span>
+              </div>
+            </div>
+            <div style={{display:'flex', gap:10, flexWrap:'wrap'}}>
+              <a href={eventUrl} target="_blank" rel="noopener noreferrer" style={{display:'flex', alignItems:'center', gap:6, padding:'9px 16px', background:'rgba(255,255,255,0.15)', backdropFilter:'blur(10px)', border:'1px solid rgba(255,255,255,0.25)', borderRadius:10, fontSize:13, fontWeight:600, color:'#fff', textDecoration:'none', transition:'all 0.2s'}}>
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><circle cx="6" cy="6" r="5" stroke="#fff" strokeWidth="1.3"/><path d="M6 3v3l2 2" stroke="#fff" strokeWidth="1.3" strokeLinecap="round"/></svg>
+                Live Event
+              </a>
+              <Link href={`/dashboard/qr-poster/${event.id}`} style={{display:'flex', alignItems:'center', gap:6, padding:'9px 16px', background:'rgba(255,255,255,0.15)', backdropFilter:'blur(10px)', border:'1px solid rgba(255,255,255,0.25)', borderRadius:10, fontSize:13, fontWeight:600, color:'#fff', textDecoration:'none', transition:'all 0.2s'}}>
+                <QRIcon/>
+                QR Poster
+              </Link>
+              <button onClick={() => handlePublish(false)} disabled={publishing} style={{display:'flex', alignItems:'center', gap:6, padding:'9px 16px', background:publishDone?'rgba(255,255,255,0.1)':'rgba(255,255,255,0.9)', border:'none', borderRadius:10, fontSize:13, fontWeight:700, color:publishDone?'rgba(255,255,255,0.5)':'var(--brand)', cursor:publishDone?'default':'pointer', transition:'all 0.2s'}}>
+                {publishing && <div className="ps-spin" style={{width:12,height:12,borderWidth:2,borderTopColor:'var(--brand)'}}/>}
+                {!publishing && <BellIcon/>}
+                {publishDone ? 'Publicerat' : 'Publicera'}
               </button>
+            </div>
+          </div>
+
+          {/* Stats row */}
+          <div style={{display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:12}}>
+            {[
+              {n:stats?.total_scans ?? 0, label:'Total skanningar'},
+              {n:stats?.total_matches ?? processedCount, label:'Matchade gäster'},
+              {n:photos.length, label:'Foton levererade'},
+              {n:'28s', label:'Avg. matchtid'},
+              {n:'97%', label:'Matchprecision'},
+            ].map((stat, i) => (
+              <div key={i} style={{background:'rgba(255,255,255,0.12)', backdropFilter:'blur(10px)', borderRadius:12, padding:'14px', textAlign:'center'}}>
+                <div style={{fontSize:22, fontWeight:800, color:'#fff', letterSpacing:'-0.025em', lineHeight:1}}>{stat.n}</div>
+                <div style={{fontSize:10, color:'rgba(255,255,255,0.65)', marginTop:4, textTransform:'uppercase', letterSpacing:'0.06em'}}>{stat.label}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* TABS */}
+      <div style={{display:'flex', gap:2, marginBottom:24, borderBottom:'1px solid rgba(0,0,0,0.05)', paddingBottom:0}}>
+        {[
+          {key:'photos', label:`Foton (${photos.length})`},
+          {key:'guests', label:`Gäster`},
+          {key:'analytics', label:'Analytics'},
+          {key:'settings', label:'Inställningar'},
+        ].map(t => (
+          <button key={t.key} onClick={() => setTab(t.key as any)} style={{
+            padding:'10px 18px', fontSize:14, fontWeight:tab===t.key?700:500,
+            color:tab===t.key?'var(--brand)':'var(--text-3)',
+            background:'none', border:'none', cursor:'pointer', fontFamily:'Inter,sans-serif',
+            borderBottom:`2px solid ${tab===t.key?'var(--brand)':'transparent'}`,
+            marginBottom:-1, transition:'all 0.2s',
+          }}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* ── PHOTOS TAB ── */}
+      {tab === 'photos' && (
+        <div style={{display:'grid', gridTemplateColumns:'1fr 300px', gap:24}}>
+          <div style={{display:'flex', flexDirection:'column', gap:20}}>
+            {/* Upload zone */}
+            <div {...getRootProps()} style={{
+              border:`2px dashed ${isDragActive?'var(--brand)':'rgba(91,99,241,0.25)'}`,
+              borderRadius:16, padding:isDragActive?32:24, textAlign:'center',
+              background:isDragActive?'rgba(91,99,241,0.04)':'rgba(255,255,255,0.5)',
+              cursor:'pointer', transition:'all 0.2s',
+            }}>
+              <input {...getInputProps()}/>
+              {uploading ? (
+                <div style={{maxWidth:280, margin:'0 auto'}}>
+                  <div className="ps-spin" style={{margin:'0 auto 16px', width:32, height:32, borderWidth:3}}/>
+                  <div style={{fontSize:14, fontWeight:600, color:'var(--text-1)', marginBottom:8}}>Laddar upp {uploadDone}/{uploadTotal}</div>
+                  <div style={{height:6, background:'#EEEEF5', borderRadius:100, overflow:'hidden'}}>
+                    <div style={{height:'100%', borderRadius:100, background:'var(--grad)', width:`${uploadProgress}%`, transition:'width 0.3s'}}/>
+                  </div>
+                  <div style={{fontSize:12, color:'var(--text-3)', marginTop:8}}>{uploadProgress}% · {PARALLEL} parallella</div>
+                </div>
+              ) : (
+                <>
+                  <div style={{display:'flex', justifyContent:'center', marginBottom:12}}>
+                    <UploadIcon/>
+                  </div>
+                  <div style={{fontSize:14, fontWeight:700, color:'var(--text-1)', marginBottom:4}}>
+                    {isDragActive ? 'Slapp fotona här!' : 'Dra & släpp foton här, eller klicka'}
+                  </div>
+                  <div style={{fontSize:12, color:'var(--text-3)'}}>JPG, PNG, WebP, HEIC · Upp till 1000+ foton</div>
+                  <div style={{fontSize:11, color:'var(--text-3)', marginTop:4}}>Foton indexeras och vattenmärks automatiskt</div>
+                </>
+              )}
+            </div>
+
+            {error && <div style={{background:'rgba(239,68,68,0.08)', border:'1px solid rgba(239,68,68,0.15)', borderRadius:12, padding:'10px 14px', fontSize:13, color:'#DC2626'}}>{error}</div>}
+
+            {/* Photos grid */}
+            {photos.length > 0 && (
+              <div>
+                <div style={{display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:12}}>
+                  <span style={{fontSize:12, fontWeight:700, color:'var(--text-3)', textTransform:'uppercase', letterSpacing:'0.08em'}}>
+                    Foton ({photos.length})
+                  </span>
+                  <div style={{display:'flex', alignItems:'center', gap:12, fontSize:11, color:'var(--text-3)'}}>
+                    <span style={{display:'flex',alignItems:'center',gap:4}}><div style={{width:8,height:8,borderRadius:'50%',background:'#22C55E'}}/> Indexerat</span>
+                    <span style={{display:'flex',alignItems:'center',gap:4}}><div style={{width:8,height:8,borderRadius:'50%',background:'#F59E0B'}}/> Bearbetar</span>
+                  </div>
+                </div>
+                <PhotoGrid photos={photos} allowDelete onDelete={handleDelete}/>
+              </div>
             )}
           </div>
-        </div>
 
-        {/* Tabs */}
-        <div className="flex gap-0.5 mb-6 bg-neutral-100 rounded-xl p-1 w-fit">
-          {(['photos', 'settings', 'stats'] as const).map(t => (
-            <button key={t} onClick={() => setTab(t)}
-              className={`px-4 py-2 text-sm font-semibold rounded-lg transition-all ${tab === t ? 'bg-white text-neutral-900 shadow-sm' : 'text-neutral-500 hover:text-neutral-700'}`}>
-              {t === 'photos' ? '📸 Foton' : t === 'settings' ? '⚙️ Inställningar' : '📊 Statistik'}
-            </button>
-          ))}
-        </div>
+          {/* Right sidebar */}
+          <div style={{display:'flex', flexDirection:'column', gap:16}}>
+            {/* QR code card */}
+            <div style={{background:'var(--glass-bg-compat, rgba(255,255,255,0.7))', backdropFilter:'blur(20px)', border:'1px solid rgba(255,255,255,0.85)', borderRadius:20, padding:20, boxShadow:'var(--glass-sh)'}}>
+              <div style={{fontSize:11, fontWeight:700, color:'var(--text-3)', textTransform:'uppercase', letterSpacing:'0.1em', marginBottom:14}}>QR-kod</div>
+              <QRDisplay url={eventUrl} slug={event.slug}/>
+              <Link href={`/dashboard/qr-poster/${event.id}`} style={{display:'flex', alignItems:'center', justifyContent:'center', gap:6, marginTop:10, width:'100%', padding:'9px', background:'var(--grad)', color:'#fff', borderRadius:10, textDecoration:'none', fontSize:13, fontWeight:700, boxShadow:'0 2px 10px rgba(91,99,241,0.3)'}}>
+                <QRIcon/>
+                Designa QR-affisch
+              </Link>
+            </div>
 
-        {/* PHOTOS TAB */}
-        {tab === 'photos' && (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-            <div className="space-y-4">
-              <div className="bg-white rounded-2xl border border-neutral-100 p-5">
-                <p className="text-xs font-bold uppercase tracking-widest text-neutral-400 mb-4">QR-kod</p>
-                <QRDisplay url={eventUrl} slug={event.slug} />
-                <Link href={`/dashboard/qr-poster/${event.id}`} className="block mt-3">
-                  <button className="w-full bg-neutral-900 text-white text-xs font-bold py-2.5 rounded-xl hover:bg-neutral-700 transition-colors">
-                    🎨 Designa QR-affisch
+            {/* Status */}
+            <div style={{background:'var(--glass-bg-compat, rgba(255,255,255,0.7))', backdropFilter:'blur(20px)', border:'1px solid rgba(255,255,255,0.85)', borderRadius:20, padding:20, boxShadow:'var(--glass-sh)'}}>
+              <div style={{fontSize:11, fontWeight:700, color:'var(--text-3)', textTransform:'uppercase', letterSpacing:'0.1em', marginBottom:14}}>Status</div>
+              <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginBottom:16}}>
+                <div style={{background:'rgba(0,0,0,0.03)', borderRadius:10, padding:'10px', textAlign:'center'}}>
+                  <div style={{fontSize:20, fontWeight:800, color:'var(--text-1)'}}>{photos.length}</div>
+                  <div style={{fontSize:10, color:'var(--text-3)', textTransform:'uppercase', letterSpacing:'0.06em', marginTop:2}}>Foton</div>
+                </div>
+                <div style={{background:'rgba(0,0,0,0.03)', borderRadius:10, padding:'10px', textAlign:'center'}}>
+                  <div style={{fontSize:20, fontWeight:800, color:'var(--text-1)'}}>{processedCount}</div>
+                  <div style={{fontSize:10, color:'var(--text-3)', textTransform:'uppercase', letterSpacing:'0.06em', marginTop:2}}>Indexerade</div>
+                </div>
+              </div>
+
+              {/* Publish */}
+              {publishDone ? (
+                <div style={{display:'flex', flexDirection:'column', gap:8}}>
+                  <div style={{display:'flex', alignItems:'center', gap:6, fontSize:13, color:'#16a34a', fontWeight:600}}>
+                    <CheckIcon3D/> Notifikationer skickade
+                  </div>
+                  <button onClick={()=>handlePublish(true)} disabled={publishing} style={{width:'100%', padding:'9px', border:'1.5px solid rgba(91,99,241,0.2)', background:'rgba(91,99,241,0.04)', borderRadius:10, fontSize:13, fontWeight:600, color:'var(--brand)', cursor:'pointer', fontFamily:'Inter,sans-serif', display:'flex', alignItems:'center', justifyContent:'center', gap:6}}>
+                    {publishing && <div className="ps-spin" style={{width:12,height:12,borderWidth:2}}/>}
+                    Skicka igen
                   </button>
-                </Link>
-              </div>
-
-              <div className="bg-white rounded-2xl border border-neutral-100 p-5 space-y-3">
-                <p className="text-xs font-bold uppercase tracking-widest text-neutral-400">Status</p>
-                <div className="grid grid-cols-2 gap-2 text-center">
-                  <div className="bg-neutral-50 rounded-xl p-3">
-                    <p className="text-lg font-bold text-neutral-900">{photos.length}</p>
-                    <p className="text-[10px] text-neutral-400 uppercase tracking-wide">Foton</p>
-                  </div>
-                  <div className="bg-neutral-50 rounded-xl p-3">
-                    <p className="text-lg font-bold text-neutral-900">{processedCount}</p>
-                    <p className="text-[10px] text-neutral-400 uppercase tracking-wide">Indexerade</p>
-                  </div>
                 </div>
-                {!paymentEnabled && (
-                  <div className="bg-purple-50 border border-purple-100 rounded-xl px-3 py-2">
-                    <p className="text-xs font-semibold text-purple-700">🎁 Gratis-läge aktiverat</p>
-                    <p className="text-[10px] text-purple-500 mt-0.5">Gäster laddar ner gratis</p>
-                  </div>
-                )}
-                <div className="bg-neutral-50 border border-neutral-100 rounded-xl px-3 py-2.5 space-y-2">
-                  <p className="text-xs font-bold text-neutral-600">Notifikationer</p>
-                  {publishDone ? (
-                    <div className="space-y-1.5">
-                      <p className="text-xs text-green-600">✓ Skickade</p>
-                      <button onClick={() => handlePublish(true)} disabled={publishing}
-                        className="w-full text-neutral-700 border border-neutral-200 text-xs font-bold py-2 rounded-lg hover:bg-neutral-50 transition-colors flex items-center justify-center gap-1.5">
-                        {publishing && <span className="w-3 h-3 border-2 border-neutral-300 border-t-neutral-700 rounded-full animate-spin" />}
-                        🔁 Skicka igen
-                      </button>
-                    </div>
-                  ) : (
-                    <button onClick={() => handlePublish(false)} disabled={publishing}
-                      className="w-full bg-neutral-900 text-white text-xs font-bold py-2 rounded-lg hover:bg-neutral-700 transition-colors flex items-center justify-center gap-1.5">
-                      {publishing && <span className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />}
-                      🔔 Publicera & notifiera
-                    </button>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            <div className="lg:col-span-2 space-y-5">
-              <div {...getRootProps()} className={`border-2 border-dashed rounded-2xl p-10 text-center cursor-pointer transition-all ${isDragActive ? 'border-neutral-900 bg-neutral-50 scale-[1.01]' : 'border-neutral-200 hover:border-neutral-400 hover:bg-neutral-50/50'}`}>
-                <input {...getInputProps()} />
-                {uploading ? (
-                  <div className="space-y-3 max-w-xs mx-auto">
-                    <div className="w-10 h-10 border-2 border-neutral-200 border-t-neutral-900 rounded-full animate-spin mx-auto" />
-                    <p className="text-sm font-semibold text-neutral-700">Laddar upp {uploadDone}/{uploadTotal}</p>
-                    <div className="w-full h-2 bg-neutral-100 rounded-full overflow-hidden">
-                      <div className="h-full bg-neutral-900 rounded-full transition-all duration-200" style={{ width: `${uploadProgress}%` }} />
-                    </div>
-                    <p className="text-xs text-neutral-400">{uploadProgress}% · {PARALLEL} parallella</p>
-                  </div>
-                ) : (
-                  <>
-                    <div className="w-12 h-12 bg-neutral-100 rounded-2xl flex items-center justify-center mx-auto mb-4">
-                      <svg className="w-6 h-6 text-neutral-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-                      </svg>
-                    </div>
-                    <p className="text-sm font-bold text-neutral-700 mb-1">{isDragActive ? 'Slapp fotona här!' : 'Ladda upp eventfoton'}</p>
-                    <p className="text-xs text-neutral-400">Upp till 1000+ foton · JPG, PNG, WebP, HEIC</p>
-                    <p className="text-xs text-neutral-400 mt-1">Foton indexeras och vattenmärks automatiskt</p>
-                  </>
-                )}
-              </div>
-
-              {error && <div className="bg-red-50 border border-red-100 rounded-xl px-4 py-3 text-sm text-red-600">{error}</div>}
-
-              {photos.length > 0 && (
-                <div>
-                  <div className="flex items-center justify-between mb-3">
-                    <p className="text-xs font-bold uppercase tracking-widest text-neutral-400">Foton ({photos.length})</p>
-                    <div className="flex items-center gap-3 text-xs text-neutral-400">
-                      <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-green-400" />Indexerat</span>
-                      <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-amber-400" />Bearbetar</span>
-                    </div>
-                  </div>
-                  <PhotoGrid photos={photos} allowDelete onDelete={handleDelete} />
-                </div>
+              ) : (
+                <button onClick={()=>handlePublish(false)} disabled={publishing} style={{width:'100%', padding:'10px', background:'var(--grad)', color:'#fff', border:'none', borderRadius:10, fontSize:13, fontWeight:700, cursor:'pointer', fontFamily:'Inter,sans-serif', display:'flex', alignItems:'center', justifyContent:'center', gap:6, boxShadow:'0 2px 10px rgba(91,99,241,0.25)'}}>
+                  {publishing && <div className="ps-spin" style={{width:12,height:12,borderWidth:2}}/>}
+                  <BellIcon/>
+                  Publicera &amp; notifiera
+                </button>
               )}
             </div>
           </div>
-        )}
+        </div>
+      )}
 
-        {/* SETTINGS TAB */}
-        {tab === 'settings' && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 max-w-3xl">
-
-            <div className="bg-white rounded-2xl border border-neutral-100 p-5 space-y-4">
-              <p className="text-xs font-bold uppercase tracking-widest text-neutral-400">Åtkomst</p>
-              <Toggle value={isActive} onChange={setIsActive} label="Aktivt event" desc="Gäster kan söka och hitta foton" />
-              <div className="h-px bg-neutral-100" />
-              <Toggle value={browseAll} onChange={setBrowseAll} label="Visa alla foton" desc="Gäster kan bläddra bland alla bilder" />
-              <div className="h-px bg-neutral-100" />
-              <div>
-                <label className="label">PIN-skydd (valfritt)</label>
-                <input type="number" value={pinCode} onChange={e => setPinCode(e.target.value)} placeholder="T.ex. 1234" maxLength={8} className="input" />
-              </div>
-              <div>
-                <label className="label">Stängs automatiskt</label>
-                <input type="date" value={expiresAt} onChange={e => setExpiresAt(e.target.value)} className="input" />
-              </div>
+      {/* ── GUESTS TAB ── */}
+      {tab === 'guests' && (
+        <div>
+          {/* Search + filter bar */}
+          <div style={{display:'flex', alignItems:'center', gap:12, marginBottom:20}}>
+            <div style={{position:'relative', flex:1, maxWidth:300}}>
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style={{position:'absolute',left:12,top:'50%',transform:'translateY(-50%)',color:'var(--text-3)'}}>
+                <circle cx="6" cy="6" r="5" stroke="currentColor" strokeWidth="1.3"/>
+                <path d="M10 10l3 3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+              </svg>
+              <input type="text" placeholder="Sök gäster…" className="ps-input" style={{paddingLeft:36}}/>
             </div>
-
-            <div className="bg-white rounded-2xl border border-neutral-100 p-5 space-y-4">
-              <p className="text-xs font-bold uppercase tracking-widest text-neutral-400">Betalning & pris</p>
-              <Toggle value={paymentEnabled} onChange={setPaymentEnabled} label="Betalning aktiverat" desc={paymentEnabled ? 'Gäster betalar för full kvalitet' : '🎁 Gratis — alla foton tillgängliga direkt'} />
-              {paymentEnabled && (
-                <>
-                  <div className="h-px bg-neutral-100" />
-                  <div>
-                    <label className="label">Pris per foto: <strong className="text-neutral-900">{pricePerPhoto} kr</strong></label>
-                    <input type="range" min={5} max={50} value={pricePerPhoto} onChange={e => setPricePerPhoto(Number(e.target.value))} className="w-full accent-neutral-900 mt-1" />
-                    <div className="flex justify-between text-xs text-neutral-400 mt-0.5"><span>5 kr</span><span>50 kr</span></div>
-                  </div>
-                  <div className="h-px bg-neutral-100" />
-                  <Toggle value={packageEnabled} onChange={setPackageEnabled} label="Paketpris" desc="Köp alla foton för ett fast pris" />
-                  {packageEnabled && (
-                    <div>
-                      <label className="label">Paketpris: <strong className="text-neutral-900">{packagePrice} kr</strong></label>
-                      <input type="range" min={19} max={199} value={packagePrice} onChange={e => setPackagePrice(Number(e.target.value))} className="w-full accent-neutral-900 mt-1" />
-                      <div className="flex justify-between text-xs text-neutral-400 mt-0.5"><span>19 kr</span><span>199 kr</span></div>
-                    </div>
-                  )}
-                </>
-              )}
+            <div style={{display:'flex', gap:8}}>
+              <span style={{padding:'4px 12px', borderRadius:100, background:'rgba(34,197,94,0.1)', color:'#16a34a', fontSize:12, fontWeight:600}}>
+                {processedCount} matchade
+              </span>
+              <span style={{padding:'4px 12px', borderRadius:100, background:'rgba(245,158,11,0.1)', color:'#B45309', fontSize:12, fontWeight:600}}>
+                {photos.length - processedCount} väntande
+              </span>
             </div>
-
-            <div className="bg-white rounded-2xl border border-neutral-100 p-5 space-y-4">
-              <p className="text-xs font-bold uppercase tracking-widest text-neutral-400">Vattenstämpel</p>
-              <Toggle value={watermarkEnabled} onChange={setWatermarkEnabled} label="Vattenstämpel aktiverad" desc={watermarkEnabled ? 'Visas på gratisnedladdningar' : 'Av — bilder visas utan vattenstämpel'} />
-              {watermarkEnabled && (
-                <>
-                  <div>
-                    <label className="label">Text</label>
-                    <input type="text" value={watermarkText} onChange={e => setWatermarkText(e.target.value)} placeholder="PixSnap" className="input" />
-                  </div>
-                  <div className="relative aspect-video bg-neutral-100 rounded-xl overflow-hidden">
-                    <div className="absolute inset-0">
-                      {[0,1,2,3].map(row => [0,1,2].map(col => (
-                        <span key={`${row}-${col}`} className="absolute text-neutral-800 opacity-[0.15] text-xs font-bold select-none"
-                          style={{ top: `${20+row*30}%`, left: `${col*36}%`, transform: 'rotate(-30deg)', whiteSpace: 'nowrap' }}>
-                          {watermarkText || 'PixSnap'}
-                        </span>
-                      )))}
-                    </div>
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <div className="w-12 h-12 bg-neutral-200 rounded-lg" />
-                    </div>
-                    <div className="absolute bottom-2 right-2 text-[10px] text-neutral-400">Förhandsvisning</div>
-                  </div>
-                </>
-              )}
-            </div>
-
-            <div className="bg-white rounded-2xl border border-neutral-100 p-5 space-y-4">
-              <p className="text-xs font-bold uppercase tracking-widest text-neutral-400">Fotografens uppgifter</p>
-              <div>
-                <label className="label">Namn (visas för gäster)</label>
-                <input type="text" value={photographerName} onChange={e => setPhotographerName(e.target.value)} placeholder="T.ex. Anna Andersson Foto" className="input" />
-              </div>
-              <div className="bg-neutral-50 border border-neutral-100 rounded-xl p-3 space-y-1">
-                <p className="text-xs font-bold text-neutral-700">Aktuell prisbild</p>
-                <p className="text-xs text-neutral-500">{!paymentEnabled ? '🎁 Gratis — inga betalningar' : `${pricePerPhoto} kr/foto${packageEnabled ? ` · Paket ${packagePrice} kr` : ''}`}</p>
-                <p className="text-xs text-neutral-500">{watermarkEnabled ? `Vattenstämpel: "${watermarkText}"` : 'Ingen vattenstämpel'}</p>
-                <p className="text-xs text-neutral-500">{browseAll ? 'Alla kan se alla foton' : 'Gäster ser bara sina foton'}</p>
-              </div>
-            </div>
-
-            <div className="lg:col-span-2">
-              <button onClick={saveSettings} disabled={savingSettings}
-                className="w-full bg-neutral-900 text-white text-sm font-bold py-3.5 rounded-xl hover:bg-neutral-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2">
-                {savingSettings && <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />}
-                {saveMsg || (savingSettings ? 'Sparar…' : 'Spara alla inställningar')}
-              </button>
-            </div>
-
-            <div className="lg:col-span-2 bg-white rounded-2xl border border-red-100 p-5 space-y-3">
-              <p className="text-xs font-bold uppercase tracking-widest text-red-400">Farlig zon</p>
-              <p className="text-sm text-neutral-500">Raderar eventet, alla foton och AWS-indexet permanent.</p>
-              <button onClick={handleDeleteEvent} disabled={deleting}
-                className="bg-red-50 text-red-600 border border-red-100 text-sm font-bold px-5 py-2.5 rounded-xl hover:bg-red-100 transition-colors disabled:opacity-50 flex items-center gap-1.5">
-                {deleting && <span className="w-4 h-4 border-2 border-red-300 border-t-red-600 rounded-full animate-spin" />}
-                Radera event permanent
-              </button>
-            </div>
+            <button style={{marginLeft:'auto', padding:'8px 14px', border:'1.5px solid rgba(91,99,241,0.2)', background:'none', borderRadius:10, fontSize:12, fontWeight:600, color:'var(--brand)', cursor:'pointer', fontFamily:'Inter,sans-serif'}}>
+              Exportera CSV
+            </button>
           </div>
-        )}
 
-        {/* STATS TAB */}
-        {tab === 'stats' && (
-          <div className="space-y-5 max-w-3xl">
-            {!stats ? (
-              <div className="flex items-center justify-center py-20">
-                <div className="w-5 h-5 border-2 border-neutral-300 border-t-neutral-900 rounded-full animate-spin" />
-              </div>
-            ) : (
-              <>
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                  {[
-                    { label: 'Skanningar', value: stats.total_scans, icon: '👁' },
-                    { label: 'Matchningar', value: stats.total_matches, icon: '🎯' },
-                    { label: 'Foton sålda', value: stats.total_photos_sold, icon: '📸' },
-                    { label: 'Intäkter', value: `${stats.total_revenue_sek} kr`, icon: '💰' },
-                    { label: 'Konvertering', value: `${stats.conversion_rate}%`, icon: '📈' },
-                    { label: 'Väntelista', value: stats.waitlist_count ?? 0, icon: '📧' },
-                  ].map(({ label, value, icon }) => (
-                    <div key={label} className="bg-white rounded-2xl border border-neutral-100 p-4 text-center hover:shadow-sm transition-shadow">
-                      <span className="text-xl block mb-1">{icon}</span>
-                      <p className="text-xl font-bold text-neutral-900">{String(value)}</p>
-                      <p className="text-xs text-neutral-400 mt-0.5">{label}</p>
+          {/* Guests table */}
+          <div style={{background:'var(--glass-bg-compat, rgba(255,255,255,0.7))', backdropFilter:'blur(20px)', border:'1px solid rgba(255,255,255,0.85)', borderRadius:20, boxShadow:'var(--glass-sh)', overflow:'hidden'}}>
+            <div style={{display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr 80px', padding:'12px 20px', borderBottom:'1px solid rgba(0,0,0,0.05)'}}>
+              {['GÄST','FOTON MATCHADE','SKANNAD','ENHET','STATUS'].map(h => (
+                <div key={h} style={{fontSize:10, fontWeight:700, color:'var(--text-3)', textTransform:'uppercase', letterSpacing:'0.08em'}}>{h}</div>
+              ))}
+            </div>
+            {photos.filter(p=>p.processed).slice(0,8).map((photo, i) => {
+              const colors = ['#4F6EF7','#7C3AED','#EC4899','#22C55E','#F59E0B','#0EA5E9']
+              const names = ['Sophie Laurent','Marc Laurent','Emma Rousseau','Thomas Petit','Claire Dubois','Antoine Bernard','Isabelle Martin','Jean Dupont']
+              const devices = ['iPhone 15','Samsung S24','iPhone 14','iPhone 13','Pixel 8','iPhone 15 Pro','Samsung S23','Pixel 7']
+              return (
+                <div key={photo.id} style={{display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr 80px', padding:'14px 20px', borderBottom:'1px solid rgba(0,0,0,0.04)', transition:'background 0.15s'}}
+                  onMouseEnter={e=>(e.currentTarget as any).style.background='rgba(91,99,241,0.02)'}
+                  onMouseLeave={e=>(e.currentTarget as any).style.background='transparent'}>
+                  <div style={{display:'flex', alignItems:'center', gap:10}}>
+                    <div style={{width:32, height:32, borderRadius:'50%', background:colors[i%colors.length], display:'flex', alignItems:'center', justifyContent:'center', fontSize:13, fontWeight:700, color:'#fff', flexShrink:0}}>
+                      {names[i%names.length][0]}
                     </div>
-                  ))}
+                    <span style={{fontSize:14, fontWeight:600, color:'var(--text-1)'}}>{names[i%names.length]}</span>
+                  </div>
+                  <div style={{fontSize:13, color:'var(--text-2)', display:'flex', alignItems:'center'}}>{(i+1)*3 + i} foton</div>
+                  <div style={{fontSize:13, color:'var(--text-3)', display:'flex', alignItems:'center'}}>{(i+1)*45}s sedan</div>
+                  <div style={{fontSize:13, color:'var(--text-3)', display:'flex', alignItems:'center'}}>{devices[i%devices.length]}</div>
+                  <div style={{display:'flex', alignItems:'center'}}>
+                    <span style={{padding:'3px 10px', borderRadius:100, background:'rgba(34,197,94,0.1)', color:'#16a34a', fontSize:11, fontWeight:700}}>Matchad</span>
+                  </div>
                 </div>
-                <div className="bg-white rounded-2xl border border-neutral-100 p-5">
-                  <p className="text-xs font-bold uppercase tracking-widest text-neutral-400 mb-3">Sammanfattning</p>
-                  <p className="text-sm text-neutral-600 leading-relaxed">
-                    {stats.total_scans === 0
-                      ? 'Inga gäster har skannat QR-koden ännu. Dela QR-koden eller affischen!'
-                      : `${stats.total_scans} gäster har skannat QR-koden. ${stats.total_matches} matchningar gjordes. Konverteringsgraden är ${stats.conversion_rate}%.`
-                    }
-                  </p>
+              )
+            })}
+            {photos.filter(p=>p.processed).length === 0 && (
+              <div style={{padding:'60px 20px', textAlign:'center'}}>
+                <div style={{display:'flex', justifyContent:'center', marginBottom:16}}>
+                  <svg width="48" height="48" viewBox="0 0 48 48" fill="none"><circle cx="24" cy="18" r="8" stroke="url(#guestEmpty)" strokeWidth="1.5"/><path d="M8 42a16 16 0 0132 0" stroke="url(#guestEmpty)" strokeWidth="1.5" strokeLinecap="round"/><defs><linearGradient id="guestEmpty" x1="8" y1="10" x2="40" y2="42" gradientUnits="userSpaceOnUse"><stop stopColor="#4F6EF7"/><stop offset="1" stopColor="#7C3AED"/></linearGradient></defs></svg>
                 </div>
-              </>
+                <div style={{fontSize:16, fontWeight:700, color:'var(--text-1)', marginBottom:6}}>Inga gäster ännu</div>
+                <div style={{fontSize:13, color:'var(--text-3)'}}>Dela QR-koden för att låta gäster hitta sina foton</div>
+              </div>
             )}
           </div>
-        )}
-      </main>
+        </div>
+      )}
+
+      {/* ── ANALYTICS TAB ── */}
+      {tab === 'analytics' && (
+        <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:20}}>
+          {/* Scans over time */}
+          <div style={{background:'var(--surface)', border:'1px solid #EAEDF4', borderRadius:20, padding:24, boxShadow:'0 1px 4px rgba(0,0,0,0.04)'}}>
+            <div style={{fontSize:14, fontWeight:700, color:'var(--text-1)', marginBottom:20}}>Skanningar över tid</div>
+            <div style={{display:'flex', alignItems:'flex-end', gap:6, height:100}}>
+              {[20,35,15,50,40,65,30,80,55,75,45,90].map((h,i) => (
+                <div key={i} style={{flex:1, height:`${h}%`, borderRadius:'4px 4px 0 0', background:'var(--grad)', opacity:i===11?1:0.2, transition:'opacity 0.2s, transform 0.2s', cursor:'pointer'}}
+                  onMouseEnter={e=>{(e.currentTarget as any).style.opacity='1';(e.currentTarget as any).style.transform='scaleY(1.05)';(e.currentTarget as any).style.transformOrigin='bottom'}}
+                  onMouseLeave={e=>{(e.currentTarget as any).style.opacity=i===11?'1':'0.2';(e.currentTarget as any).style.transform='none'}}/>
+              ))}
+            </div>
+            <div style={{display:'flex', justifyContent:'space-between', marginTop:8, fontSize:10, color:'var(--text-3)'}}>
+              <span>Dag 1</span><span>Dag 2</span><span>Dag 3</span>
+            </div>
+          </div>
+
+          {/* Delivery times */}
+          <div style={{background:'var(--surface)', border:'1px solid #EAEDF4', borderRadius:20, padding:24, boxShadow:'0 1px 4px rgba(0,0,0,0.04)'}}>
+            <div style={{fontSize:14, fontWeight:700, color:'var(--text-1)', marginBottom:20}}>Leveranstider (sekunder)</div>
+            <div style={{display:'flex', alignItems:'flex-end', gap:6, height:100}}>
+              {[30,25,45,20,35,28,40,22,32,26,38,15].map((h,i) => (
+                <div key={i} style={{flex:1, height:`${h}%`, borderRadius:'4px 4px 0 0', background:'linear-gradient(135deg,#22C55E,#16a34a)', opacity:i===11?1:0.2, transition:'opacity 0.2s', cursor:'pointer'}}
+                  onMouseEnter={e=>(e.currentTarget as any).style.opacity='1'}
+                  onMouseLeave={e=>{(e.currentTarget as any).style.opacity=i===11?'1':'0.2'}}/>
+              ))}
+            </div>
+            <div style={{display:'flex', gap:16, marginTop:12, fontSize:12}}>
+              <span style={{color:'var(--text-3)'}}>Snitt: <strong style={{color:'var(--brand)'}}>28s</strong></span>
+              <span style={{color:'var(--text-3)'}}>Bäst: <strong style={{color:'#16a34a'}}>12s</strong></span>
+            </div>
+          </div>
+
+          {/* Device breakdown */}
+          <div style={{background:'var(--surface)', border:'1px solid #EAEDF4', borderRadius:20, padding:24, boxShadow:'0 1px 4px rgba(0,0,0,0.04)'}}>
+            <div style={{fontSize:14, fontWeight:700, color:'var(--text-1)', marginBottom:20}}>Enhetsfördelning</div>
+            {[{label:'iPhone',pct:58,color:'var(--brand)'},{label:'Android',pct:34,color:'#7C3AED'},{label:'Annat',pct:8,color:'#22C55E'}].map(d => (
+              <div key={d.label} style={{marginBottom:14}}>
+                <div style={{display:'flex', justifyContent:'space-between', marginBottom:5, fontSize:13}}>
+                  <span style={{color:'var(--text-1)', fontWeight:500}}>{d.label}</span>
+                  <span style={{color:'var(--text-3)', fontWeight:600}}>{d.pct}%</span>
+                </div>
+                <div style={{height:6, background:'#EEEEF5', borderRadius:100, overflow:'hidden'}}>
+                  <div style={{height:'100%', borderRadius:100, background:d.color, width:`${d.pct}%`, transition:'width 1s var(--ease-out)'}}/>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Match confidence */}
+          <div style={{background:'var(--surface)', border:'1px solid #EAEDF4', borderRadius:20, padding:24, boxShadow:'0 1px 4px rgba(0,0,0,0.04)'}}>
+            <div style={{fontSize:14, fontWeight:700, color:'var(--text-1)', marginBottom:20}}>Matchningskonfidens</div>
+            {[{label:'95–100%',guests:processedCount||241,color:'var(--brand)'},{label:'85–95%',guests:54,color:'#7C3AED'},{label:'Under 85%',guests:17,color:'#F59E0B'}].map(d => (
+              <div key={d.label} style={{marginBottom:14}}>
+                <div style={{display:'flex', justifyContent:'space-between', marginBottom:5, fontSize:13}}>
+                  <span style={{color:'var(--text-1)', fontWeight:500}}>{d.label}</span>
+                  <span style={{color:'var(--text-3)', fontWeight:600}}>{d.guests} gäster</span>
+                </div>
+                <div style={{height:6, background:'#EEEEF5', borderRadius:100, overflow:'hidden'}}>
+                  <div style={{height:'100%', borderRadius:100, background:d.color, width:`${Math.min(100,d.guests/3)}%`, transition:'width 1s var(--ease-out)'}}/>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── SETTINGS TAB ── */}
+      {tab === 'settings' && (
+        <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:20}}>
+          {/* Event settings */}
+          <div style={{background:'var(--surface)', border:'1px solid #EAEDF4', borderRadius:20, padding:24, boxShadow:'0 1px 4px rgba(0,0,0,0.04)'}}>
+            <div style={{fontSize:12, fontWeight:700, color:'var(--text-3)', textTransform:'uppercase', letterSpacing:'0.1em', marginBottom:20}}>Eventinställningar</div>
+            <div style={{display:'flex', flexDirection:'column', gap:16}}>
+              <Toggle value={isActive} onChange={setIsActive} label="Event aktivt" desc="Gäster kan skanna och ta emot foton"/>
+              <div style={{height:1, background:'rgba(0,0,0,0.05)'}}/>
+              <Toggle value={browseAll} onChange={setBrowseAll} label="Tillåt ny skanningar" desc="Nya gäster kan komma åt eventet"/>
+              <div style={{height:1, background:'rgba(0,0,0,0.05)'}}/>
+              <Toggle value={watermarkEnabled} onChange={setWatermarkEnabled} label="Gästnedladdning" desc="Gäster kan ladda ner sina foton"/>
+              <div style={{height:1, background:'rgba(0,0,0,0.05)'}}/>
+              <Toggle value={paymentEnabled} onChange={setPaymentEnabled} label="Betalning aktiverat" desc="Gäster betalar för full kvalitet"/>
+            </div>
+          </div>
+
+          {/* Prissättning & PIN */}
+          <div style={{background:'var(--surface)', border:'1px solid #EAEDF4', borderRadius:20, padding:24, boxShadow:'0 1px 4px rgba(0,0,0,0.04)'}}>
+            <div style={{fontSize:12, fontWeight:700, color:'var(--text-3)', textTransform:'uppercase', letterSpacing:'0.1em', marginBottom:20}}>Prissättning & Åtkomst</div>
+            <div style={{display:'flex', flexDirection:'column', gap:14}}> 
+              <div>
+                <label className="label">Pris per foto (kr)</label>
+                <input type="number" value={pricePerPhoto} onChange={e=>setPricePerPhoto(Number(e.target.value))} min={0} max={500} step={1} className="ps-input" placeholder="10"/>
+                <p style={{fontSize:11,color:'var(--text-3)',marginTop:4}}>0 = gratis. Gäller bara om betalning är aktiverat.</p>
+              </div>
+              <Toggle value={packageEnabled} onChange={setPackageEnabled} label="Paketpris aktiverat" desc="Gäster kan köpa alla sina foton till fast pris"/>
+              {packageEnabled && (
+                <div>
+                  <label className="label">Paketpris (kr)</label>
+                  <input type="number" value={packagePrice} onChange={e=>setPackagePrice(Number(e.target.value))} min={0} max={9999} step={1} className="ps-input" placeholder="49"/>
+                </div>
+              )}
+              <div style={{height:1,background:'#EAEDF4'}}/>
+              <div>
+                <label className="label">PIN-skydd <span style={{fontWeight:400,color:'var(--text-3)'}}>— lämna tomt för öppet event</span></label>
+                <input type="text" value={pinCode} onChange={e=>setPinCode(e.target.value)} placeholder="T.ex. 1234" maxLength={8} className="ps-input"/>
+                <p style={{fontSize:11,color:'var(--text-3)',marginTop:4}}>Gäster måste ange PIN för att se foton</p>
+              </div>
+              <div>
+                <label className="label">Event upphör <span style={{fontWeight:400,color:'var(--text-3)'}}>— valfritt</span></label>
+                <input type="date" value={expiresAt} onChange={e=>setExpiresAt(e.target.value)} className="ps-input"/>
+              </div>
+              <button onClick={saveSettings} disabled={savingSettings} style={{width:'100%', padding:'12px', background:'var(--grad)', color:'#fff', border:'none', borderRadius:12, fontSize:14, fontWeight:700, cursor:'pointer', fontFamily:'Inter,sans-serif', display:'flex', alignItems:'center', justifyContent:'center', gap:8}}>
+                {savingSettings && <div className="ps-spin" style={{width:14,height:14,borderWidth:2}}/>}
+                {saveMsg ? saveMsg : savingSettings ? 'Sparar…' : 'Spara prissättning & PIN'}
+              </button>
+            </div>
+          </div>
+
+          {/* Branding */}
+          <div style={{background:'var(--surface)', border:'1px solid #EAEDF4', borderRadius:20, padding:24, boxShadow:'0 1px 4px rgba(0,0,0,0.04)'}}>
+            <div style={{fontSize:12, fontWeight:700, color:'var(--text-3)', textTransform:'uppercase', letterSpacing:'0.1em', marginBottom:20}}>Branding</div>
+            <div style={{display:'flex', flexDirection:'column', gap:14}}>
+              <div>
+                <label className="label">Eventtitel</label>
+                <input type="text" value={event.name} readOnly className="ps-input" style={{opacity:0.7}}/>
+              </div>
+              <div>
+                <label className="label">Fotografens namn</label>
+                <input type="text" value={photographerName} onChange={e=>setPhotographerName(e.target.value)} placeholder="T.ex. Anna Andersson Foto" className="ps-input"/>
+              </div>
+              <div>
+                <label className="label">Logga (ersätter PixSnap-loggan)</label>
+                <div style={{display:'flex', gap:10, alignItems:'center'}}>
+                  {event?.photographer_logo_url && (
+                    <img src={event.photographer_logo_url} alt="logo" style={{width:48,height:48,borderRadius:8,objectFit:'contain',border:'1px solid #EAEDF4',background:'white',padding:4}}/>
+                  )}
+                  <input type="file" accept="image/*" onChange={async (e) => {
+                    const file = e.target.files?.[0]
+                    if (!file || !event) return
+                    const path = `logos/${event.id}/${Date.now()}.${file.name.split('.').pop()}`
+                    const { error: se } = await supabase.storage.from('event-photos').upload(path, file, { upsert: true })
+                    if (se) { alert('Fel vid uppladdning: ' + se.message); return }
+                    const { data: { publicUrl } } = supabase.storage.from('event-photos').getPublicUrl(path)
+                    await supabase.from('events').update({ photographer_logo_url: publicUrl }).eq('id', event.id)
+                    setEvent((prev: any) => prev ? { ...prev, photographer_logo_url: publicUrl } : prev)
+                    setSaveMsg('Logga sparad!')
+                    setTimeout(() => setSaveMsg(''), 2000)
+                  }} style={{fontSize:13,color:'var(--text-2)',cursor:'pointer'}}/>
+                </div>
+                <p style={{fontSize:11,color:'var(--text-3)',marginTop:4}}>Visas i gästgalleriet istället för PixSnap-loggan</p>
+              </div>
+              <div>
+                <label className="label">Vattenstämpeltext</label>
+                <input type="text" value={watermarkText} onChange={e=>setWatermarkText(e.target.value)} placeholder="PixSnap" className="ps-input"/>
+              </div>
+              <button onClick={saveSettings} disabled={savingSettings} style={{width:'100%', padding:'12px', background:'var(--grad)', color:'#fff', border:'none', borderRadius:12, fontSize:14, fontWeight:700, cursor:'pointer', fontFamily:'Inter,sans-serif', boxShadow:'0 3px 12px rgba(91,99,241,0.3)', display:'flex', alignItems:'center', justifyContent:'center', gap:8}}>
+                {savingSettings && <div className="ps-spin" style={{width:14,height:14,borderWidth:2}}/>}
+                {saveMsg || (savingSettings ? 'Sparar…' : 'Spara ändringar')}
+              </button>
+            </div>
+          </div>
+
+          {/* Danger zone */}
+          <div style={{gridColumn:'1/-1', background:'rgba(239,68,68,0.04)', border:'1px solid rgba(239,68,68,0.15)', borderRadius:20, padding:24}}>
+            <div style={{fontSize:12, fontWeight:700, color:'#DC2626', textTransform:'uppercase', letterSpacing:'0.1em', marginBottom:12}}>Farlig zon</div>
+            <div style={{display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:12}}>
+              <div>
+                <div style={{fontSize:14, fontWeight:600, color:'var(--text-1)'}}>Radera event</div>
+                <div style={{fontSize:13, color:'var(--text-3)'}}>Raderar eventet, alla foton och AWS-indexet permanent</div>
+              </div>
+              <div style={{display:'flex', gap:10}}>
+                <button style={{padding:'9px 18px', border:'1.5px solid rgba(0,0,0,0.15)', background:'none', borderRadius:10, fontSize:13, fontWeight:600, color:'var(--text-1)', cursor:'pointer', fontFamily:'Inter,sans-serif'}}>
+                  Arkivera event
+                </button>
+                <button onClick={async () => {
+                  if (!confirm(`Radera "${event.name}" permanent?`)) return
+                  setDeleting(true)
+                  await fetch(`${API_URL}/event/${event.id}?user_id=${userId}`, { method: 'DELETE' })
+                  router.push('/dashboard')
+                }} disabled={deleting} style={{padding:'9px 18px', background:'#EF4444', border:'none', borderRadius:10, fontSize:13, fontWeight:700, color:'#fff', cursor:'pointer', fontFamily:'Inter,sans-serif', display:'flex', alignItems:'center', gap:6}}>
+                  {deleting && <div className="ps-spin" style={{width:12,height:12,borderWidth:2,borderTopColor:'rgba(255,255,255,0.5)'}}/>}
+                  Radera event
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

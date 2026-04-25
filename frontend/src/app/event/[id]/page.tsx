@@ -3,15 +3,15 @@ import { useEffect, useRef, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
+import { PS_LOGO } from '@/components/layout/Navbar'
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000'
-type Mode = 'loading' | 'consent' | 'pin' | 'choose' | 'camera' | 'preview' | 'waitlist'
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? process.env.NEXT_PUBLIC_PYTHON_SERVICE_URL ?? 'http://localhost:8000'
+type Mode = 'loading' | 'consent' | 'pin' | 'camera' | 'preview' | 'searching' | 'waitlist'
 
-function getSaved(eventId: string) {
+function savedSession(eventId: string) {
   try {
-    const raw = localStorage.getItem(`ps_${eventId}`)
-    if (!raw) return null
-    const d = JSON.parse(raw)
+    const d = JSON.parse(localStorage.getItem(`ps_${eventId}`) ?? 'null')
+    if (!d) return null
     if (Date.now() - d.ts > 30 * 86400000) { localStorage.removeItem(`ps_${eventId}`); return null }
     return d
   } catch { return null }
@@ -21,37 +21,37 @@ export default function EventPage() {
   const { id } = useParams<{ id: string }>()
   const router = useRouter()
   const supabase = createClient()
+
   const [event, setEvent] = useState<any>(null)
   const [notFound, setNotFound] = useState(false)
   const [expired, setExpired] = useState(false)
   const [mode, setMode] = useState<Mode>('loading')
   const [selfie, setSelfie] = useState<File | null>(null)
-  const [preview, setPreview] = useState<string | null>(null)
-  const [searching, setSearching] = useState(false)
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [pin, setPin] = useState('')
   const [pinError, setPinError] = useState(false)
   const [waitlistEmail, setWaitlistEmail] = useState('')
   const [waitlistDone, setWaitlistDone] = useState(false)
+  const [procStep, setProcStep] = useState(0)
+  const [procSecs, setProcSecs] = useState(0)
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   useEffect(() => {
     async function load() {
-      const { data, error } = await supabase.from('events').select('*').eq('slug', id).single()
-      if (error || !data) { setNotFound(true); return }
+      const { data, error: e } = await supabase.from('events').select('*').eq('slug', id).single()
+      if (e || !data) { setNotFound(true); return }
       if (!data.is_active) { setExpired(true); return }
       if (data.expires_at && new Date(data.expires_at) < new Date()) { setExpired(true); return }
       setEvent(data)
-
-      // Auto-redirect if session exists — no consent needed
-      const saved = getSaved(data.id)
+      const saved = savedSession(data.id)
       if (saved?.matches?.length > 0) {
         router.replace(`/results/${data.id}?matches=${saved.matches.join(',')}&token=${saved.token ?? ''}`)
         return
       }
-
       setMode('consent')
     }
     load()
@@ -63,10 +63,14 @@ export default function EventPage() {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 1280 } } })
       streamRef.current = stream
       if (videoRef.current) { videoRef.current.srcObject = stream; videoRef.current.play() }
-    } catch { setError('Kunde inte starta kameran.'); setMode('choose') }
+    } catch {
+      setError('Kunde inte starta kameran. Kontrollera kamerabehörigheter.'); setMode('consent')
+    }
   }
+
   function stopCamera() { streamRef.current?.getTracks().forEach(t => t.stop()); streamRef.current = null }
-  function capturePhoto() {
+
+  function capture() {
     const video = videoRef.current; const canvas = canvasRef.current
     if (!video || !canvas) return
     canvas.width = video.videoWidth; canvas.height = video.videoHeight
@@ -74,18 +78,23 @@ export default function EventPage() {
     canvas.toBlob(blob => {
       if (!blob) return
       setSelfie(new File([blob], 'selfie.jpg', { type: 'image/jpeg' }))
-      setPreview(URL.createObjectURL(blob))
-      setMode('preview'); stopCamera()
-    }, 'image/jpeg', 0.9)
+      setPreviewUrl(URL.createObjectURL(blob))
+      stopCamera(); setMode('preview')
+    }, 'image/jpeg', 0.92)
   }
+
   async function verifyPin() {
     const res = await fetch(`${API_URL}/event/${event.id}/verify-pin?pin=${pin}`)
     const d = await res.json()
-    if (d.valid) { setMode('choose'); setPinError(false) } else setPinError(true)
+    if (d.valid) { setPinError(false); startCamera() } else setPinError(true)
   }
+
   async function handleSearch() {
     if (!selfie || !event) return
-    setSearching(true); setError(null)
+    setMode('searching'); setError(null); setProcStep(0); setProcSecs(0)
+    const steps = [600, 1800, 3500]
+    steps.forEach((delay, i) => setTimeout(() => setProcStep(i + 1), delay))
+    timerRef.current = setInterval(() => setProcSecs(s => s + 1), 1000)
     try {
       const fileName = `selfies/${event.id}/${Date.now()}.jpg`
       const { error: se } = await supabase.storage.from('selfies').upload(fileName, selfie, { upsert: true })
@@ -96,151 +105,222 @@ export default function EventPage() {
         body: JSON.stringify({ event_id: event.id, selfie_url: publicUrl, pin_code: pin }),
       })
       const d = await res.json()
-      if (!d.success) { setError(d.message || 'Sökning misslyckades'); setSearching(false); return }
-      if (!d.photos_ready) { setMode('waitlist'); setSearching(false); return }
-      if (!d.matches?.length) { setError('Inga foton hittades. Prova igen.'); setSearching(false); return }
-      // Save session
+      clearInterval(timerRef.current!)
+      if (!d.success) { setError(d.message || 'Sökning misslyckades'); setMode('preview'); return }
+      if (!d.photos_ready) { setMode('waitlist'); return }
+      if (!d.matches?.length) { setError('Inga foton hittades. Prova med bättre ljussättning.'); setMode('preview'); return }
       try { localStorage.setItem(`ps_${event.id}`, JSON.stringify({ matches: d.matches, token: d.session_token ?? '', ts: Date.now() })) } catch {}
       router.push(`/results/${event.id}?matches=${d.matches.join(',')}&token=${d.session_token ?? ''}`)
-    } catch (e) { setError((e as Error).message); setSearching(false) }
+    } catch (err) {
+      clearInterval(timerRef.current!)
+      setError((err as Error).message || 'Sökning misslyckades.')
+      setMode('preview')
+    }
   }
-  useEffect(() => () => stopCamera(), [])
 
-  if (notFound) return <Splash title="Event hittades inte" sub="Denna QR-kod är ogiltig." />
-  if (expired) return <Splash title="Event avslutat" sub="Fotografen har stängt eventet." />
-  if (mode === 'loading') return (
-    <div className="min-h-screen bg-white flex items-center justify-center">
-      <div className="w-5 h-5 border-2 border-neutral-200 border-t-neutral-900 rounded-full animate-spin" />
+  useEffect(() => () => { stopCamera(); clearInterval(timerRef.current!) }, [])
+
+  if (notFound || expired) return (
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, background: 'var(--bg)' }}>
+      <div style={{ textAlign: 'center', maxWidth: 340 }}>
+        <div style={{ width: 48, height: 48, borderRadius: 14, background: 'rgba(239,68,68,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 18px' }}>
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="8" stroke="var(--danger)" strokeWidth="1.5"/><path d="M10 6v5M10 13.5v.5" stroke="var(--danger)" strokeWidth="1.7" strokeLinecap="round"/></svg>
+        </div>
+        <h1 style={{ fontSize: 18, fontWeight: 700, color: 'var(--text-1)', marginBottom: 8 }}>
+          {notFound ? 'Event hittades inte' : 'Event avslutat'}
+        </h1>
+        <p style={{ fontSize: 13, color: 'var(--text-3)', lineHeight: 1.6 }}>
+          {notFound ? 'Denna QR-kod är ogiltig.' : 'Fotografen har stängt eventet.'}
+        </p>
+      </div>
     </div>
   )
 
+  if (mode === 'loading') return (
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)' }}>
+      <div className="ps-spin" style={{ width: 28, height: 28, borderWidth: 3 }} />
+    </div>
+  )
+
+  const PROC_STEPS = [
+    { label: 'Laddar upp selfie', sub: 'Krypterad anslutning' },
+    { label: 'AI analyserar ansikte', sub: 'AWS Rekognition' },
+    { label: 'Söker bland foton', sub: 'Parallell matchning' },
+  ]
+
   return (
-    <div className="min-h-screen bg-white flex flex-col">
-      <div className="h-[52px] border-b border-neutral-100 flex items-center justify-center">
-        <span className="text-sm font-bold text-neutral-900">PixSnap</span>
-      </div>
-      <main className="flex-1 flex flex-col items-center justify-center px-5 py-10 max-w-sm mx-auto w-full">
-        {mode !== 'camera' && (
-          <div className="text-center mb-8">
-            <h1 className="text-2xl font-bold text-neutral-900">{event?.name}</h1>
-            {event?.date && <p className="text-sm text-neutral-500 mt-1">{new Date(event.date).toLocaleDateString('sv-SE', { year:'numeric', month:'long', day:'numeric' })}</p>}
-          </div>
-        )}
+    <div style={{ minHeight: '100vh', background: 'var(--bg)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '24px 20px' }}>
+      <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: 8, textDecoration: 'none', color: 'var(--text-1)', marginBottom: 24 }}>
+        <div style={{ width: 26, height: 26, borderRadius: 7, background: 'var(--grad)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white' }}>{PS_LOGO}</div>
+        <span style={{ fontWeight: 700, fontSize: 13 }}>PixSnap</span>
+      </Link>
+
+      <div style={{ width: '100%', maxWidth: 400, background: 'var(--surface)', border: '1px solid #EAEDF4', borderRadius: 24, boxShadow: '0 4px 32px rgba(0,0,0,0.08)', overflow: 'hidden' }}>
 
         {mode === 'consent' && (
-          <div className="w-full space-y-4">
-            <div className="bg-neutral-50 border border-neutral-200 rounded-2xl p-5 space-y-3">
-              <p className="text-sm font-bold text-neutral-900">Innan du fortsätter</p>
-              {[['✓','Din selfie används bara för att hitta dina foton','text-green-600'],['✓','Selfien raderas automatiskt inom 24 timmar','text-green-600'],['✓','Data lagras säkert inom EU','text-green-600'],['⚠','Ta en selfie av dig själv — ej foton av skärmar','text-amber-600']].map(([i,t,c])=>(
-                <div key={t as string} className="flex gap-2.5"><span className={`text-xs font-bold flex-shrink-0 mt-0.5 ${c}`}>{i}</span><p className="text-xs text-neutral-600">{t as string}</p></div>
-              ))}
-              <Link href="/privacy" className="text-xs text-neutral-400 underline">Integritetspolicy</Link>
+          <>
+            <div style={{ background: 'var(--grad)', padding: '26px 26px 22px', textAlign: 'center', position: 'relative', overflow: 'hidden' }}>
+              <div style={{ position: 'absolute', top: -30, right: -30, width: 100, height: 100, borderRadius: '50%', background: 'rgba(255,255,255,0.08)' }} />
+              <div style={{ width: 52, height: 52, borderRadius: 15, background: 'rgba(255,255,255,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 12px', color: 'white', animation: 'float 5s ease-in-out infinite' }}>
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><rect x="2" y="6" width="20" height="14" rx="3.5" stroke="white" strokeWidth="1.5"/><circle cx="12" cy="13" r="3.5" stroke="white" strokeWidth="1.5"/><path d="M7 6V5a2 2 0 012-2h6a2 2 0 012 2v1" stroke="white" strokeWidth="1.5" strokeLinecap="round"/></svg>
+              </div>
+              <h1 style={{ fontSize: 18, fontWeight: 800, color: 'white', marginBottom: 3 }}>{event?.name}</h1>
+              {event?.date && <p style={{ fontSize: 12, color: 'rgba(255,255,255,0.7)' }}>
+                {new Date(event.date).toLocaleDateString('sv-SE', { year: 'numeric', month: 'long', day: 'numeric' })}
+              </p>}
             </div>
-            <button onClick={() => event?.pin_code ? setMode('pin') : setMode('choose')} className="w-full bg-neutral-900 text-white text-sm font-bold py-3.5 rounded-xl hover:bg-neutral-700 transition-colors">Jag förstår — fortsätt</button>
-          </div>
+
+            <div style={{ padding: 24 }}>
+              <h2 style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-1)', marginBottom: 4, textAlign: 'center' }}>Hitta dina foton</h2>
+              <p style={{ fontSize: 13, color: 'var(--text-3)', textAlign: 'center', marginBottom: 20, lineHeight: 1.6 }}>
+                Ta en selfie och AI hittar alla foton på dig på sekunder.
+              </p>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 20 }}>
+                {[
+                  { t: 'Inget konto krävs', s: 'Bara en snabb selfie', c: 'var(--brand)' },
+                  { t: 'Selfien raderas inom 24h', s: 'GDPR-kompatibelt, EU-lagring', c: 'var(--success)' },
+                  { t: 'Ta selfie direkt — inte foto av skärm', s: 'Fungerar bättre med direkt kamera', c: 'var(--warning)' },
+                ].map(item => (
+                  <div key={item.t} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', background: 'var(--surface-2)', borderRadius: 10 }}>
+                    <div style={{ width: 6, height: 6, borderRadius: '50%', background: item.c, flexShrink: 0 }} />
+                    <div>
+                      <p style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-1)' }}>{item.t}</p>
+                      <p style={{ fontSize: 11, color: 'var(--text-3)' }}>{item.s}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <Link href="/privacy" style={{ display: 'block', textAlign: 'center', fontSize: 11, color: 'var(--text-3)', textDecoration: 'none', marginBottom: 16 }}>Integritetspolicy</Link>
+
+              <button onClick={() => event?.pin_code ? setMode('pin') : startCamera()} className="ps-btn ps-btn-primary" style={{ width: '100%', justifyContent: 'center', padding: '13px', fontSize: 14 }}>
+                Jag förstår — ta selfie
+                <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M3 6.5h7M7.5 4l2.5 2.5-2.5 2.5" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              </button>
+            </div>
+          </>
         )}
 
         {mode === 'pin' && (
-          <div className="w-full space-y-4">
-            <p className="text-sm font-bold text-neutral-900 text-center">PIN-skyddat event</p>
-            <input type="number" value={pin} onChange={e => setPin(e.target.value)} placeholder="PIN-kod" className="input text-center text-xl font-mono tracking-widest" />
-            {pinError && <p className="text-xs text-red-500 text-center">Fel PIN — försök igen</p>}
-            <button onClick={verifyPin} disabled={!pin} className="w-full bg-neutral-900 text-white text-sm font-bold py-3.5 rounded-xl disabled:opacity-40">Fortsätt</button>
-          </div>
-        )}
-
-        {mode === 'choose' && (
-          <div className="w-full space-y-3">
-            <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
-              <p className="text-xs text-amber-700"><strong>Viktigt:</strong> Ta en selfie direkt med din kamera.</p>
+          <div style={{ padding: 30, textAlign: 'center' }}>
+            <div style={{ width: 48, height: 48, borderRadius: '50%', background: 'var(--brand-light)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 14px', color: 'var(--brand)' }}>
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><rect x="3.5" y="9" width="13" height="9" rx="2.5" stroke="currentColor" strokeWidth="1.4"/><path d="M6.5 9V7a3.5 3.5 0 017 0v2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/><circle cx="10" cy="13.5" r="1.5" fill="currentColor"/></svg>
             </div>
-            <button onClick={startCamera} className="w-full bg-white border border-neutral-200 rounded-2xl p-5 flex items-center gap-4 hover:border-neutral-400 hover:shadow-md transition-all text-left group">
-              <div className="w-11 h-11 bg-neutral-900 rounded-2xl flex items-center justify-center group-hover:scale-105 transition-transform">
-                <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
-                </svg>
-              </div>
-              <div><p className="text-sm font-bold text-neutral-900">Ta selfie</p><p className="text-xs text-neutral-500 mt-0.5">Använd din kamera</p></div>
-            </button>
-            {error && <div className="bg-red-50 border border-red-100 rounded-xl px-4 py-3"><p className="text-xs text-red-600">{error}</p></div>}
+            <h2 style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-1)', marginBottom: 4 }}>PIN-skyddat event</h2>
+            <p style={{ fontSize: 13, color: 'var(--text-3)', marginBottom: 18 }}>Ange PIN-koden för att komma åt eventet</p>
+            <input type="number" value={pin} onChange={e => setPin(e.target.value)} placeholder="PIN" className="ps-input" style={{ textAlign: 'center', fontSize: 20, fontWeight: 700, letterSpacing: '0.2em', marginBottom: 10 }} onKeyDown={e => e.key === 'Enter' && verifyPin()} />
+            {pinError && <p style={{ fontSize: 12, color: 'var(--danger)', marginBottom: 10 }}>Fel PIN-kod</p>}
+            <button onClick={verifyPin} disabled={!pin} className="ps-btn ps-btn-primary" style={{ width: '100%', justifyContent: 'center', padding: '12px' }}>Fortsätt</button>
           </div>
         )}
 
         {mode === 'camera' && (
-          <div className="w-full space-y-4">
-            <div className="relative rounded-2xl overflow-hidden bg-black" style={{ aspectRatio:'3/4' }}>
-              <video ref={videoRef} className="w-full h-full object-cover" playsInline muted />
-              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                <div className="w-44 h-56 rounded-full border-2 border-white/40" />
+          <div style={{ padding: 16 }}>
+            <div style={{ position: 'relative', width: '100%', aspectRatio: '1', borderRadius: 14, overflow: 'hidden', background: '#000' }}>
+              <video ref={videoRef} style={{ width: '100%', height: '100%', objectFit: 'cover', transform: 'scaleX(-1)' }} playsInline muted />
+              <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <div style={{ width: 180, height: 220, borderRadius: '50%', border: '2px solid rgba(255,255,255,0.6)', boxShadow: '0 0 0 9999px rgba(0,0,0,0.38)' }} />
+                <div style={{ position: 'absolute', width: 180, height: 2, background: 'linear-gradient(90deg, transparent, var(--brand), transparent)', animation: 'scanLine 2s ease-in-out infinite' }} />
               </div>
+              <div style={{ position: 'absolute', bottom: 12, left: 0, right: 0, textAlign: 'center', fontSize: 11, color: 'rgba(255,255,255,0.8)' }}>Centrera ansiktet i ringen</div>
             </div>
-            <canvas ref={canvasRef} className="hidden" />
-            <div className="flex gap-2">
-              <button onClick={() => { stopCamera(); setMode('choose') }} className="bg-neutral-100 text-neutral-900 text-sm font-semibold px-4 py-3 rounded-xl">Avbryt</button>
-              <button onClick={capturePhoto} className="flex-1 bg-neutral-900 text-white text-sm font-bold py-3 rounded-xl">Ta foto</button>
+            <canvas ref={canvasRef} style={{ display: 'none' }} />
+            <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
+              <button onClick={() => { stopCamera(); setMode('consent') }} className="ps-btn ps-btn-secondary ps-btn-sm" style={{ padding: '11px 16px' }}>Avbryt</button>
+              <button onClick={capture} className="ps-btn ps-btn-primary" style={{ flex: 1, justifyContent: 'center', padding: '11px' }}>
+                <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><rect x="1" y="2.5" width="13" height="10" rx="2.5" stroke="white" strokeWidth="1.3"/><circle cx="7.5" cy="7.5" r="2.5" stroke="white" strokeWidth="1.3"/></svg>
+                Ta selfie
+              </button>
             </div>
           </div>
         )}
 
-        {mode === 'preview' && preview && (
-          <div className="w-full space-y-5">
-            <div className="flex justify-center">
-              <div className="relative">
-                <div className="w-32 h-32 rounded-full overflow-hidden border-2 border-neutral-200 shadow-lg">
-                  <img src={preview} alt="selfie" className="w-full h-full object-cover" />
-                </div>
-                <div className="absolute -bottom-1 -right-1 w-7 h-7 bg-green-500 rounded-full border-2 border-white flex items-center justify-center">
-                  <svg className="w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" /></svg>
-                </div>
+        {mode === 'preview' && previewUrl && (
+          <div style={{ padding: 26, textAlign: 'center' }}>
+            <div style={{ position: 'relative', display: 'inline-block', marginBottom: 14 }}>
+              <div style={{ width: 100, height: 100, borderRadius: '50%', overflow: 'hidden', border: '2.5px solid var(--brand-light)', margin: '0 auto' }}>
+                <img src={previewUrl} alt="selfie" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+              </div>
+              <div style={{ position: 'absolute', bottom: 2, right: 2, width: 24, height: 24, borderRadius: '50%', background: 'var(--success)', border: '2.5px solid white', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 5l2.5 2.5 4-4" stroke="white" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
               </div>
             </div>
-            <button onClick={() => { setSelfie(null); setPreview(null); setMode('choose') }} className="block mx-auto text-xs text-neutral-400 underline">Byt foto</button>
-            {error && <div className="bg-red-50 border border-red-100 rounded-xl px-4 py-3"><p className="text-xs text-red-600">{error}</p></div>}
-            <button onClick={handleSearch} disabled={searching} className="w-full bg-neutral-900 text-white text-sm font-bold py-3.5 rounded-xl disabled:opacity-70 flex items-center justify-center gap-2">
-              {searching && <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />}
-              {searching ? 'Söker…' : 'Hitta mina foton'}
+            <h2 style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-1)', marginBottom: 3 }}>Selfie klar!</h2>
+            <p style={{ fontSize: 13, color: 'var(--text-3)', marginBottom: 12 }}>Ser det bra ut?</p>
+            <button onClick={() => { setSelfie(null); setPreviewUrl(null); startCamera() }} style={{ background: 'none', border: 'none', fontSize: 12, color: 'var(--text-3)', cursor: 'pointer', textDecoration: 'underline', marginBottom: 16, display: 'block', margin: '0 auto 16px' }}>Ta om</button>
+            {error && <div style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.18)', borderRadius: 10, padding: '9px 13px', fontSize: 13, color: 'var(--danger)', marginBottom: 14, textAlign: 'left' }}>{error}</div>}
+            <button onClick={handleSearch} className="ps-btn ps-btn-primary" style={{ width: '100%', justifyContent: 'center', padding: '12px', fontSize: 14 }}>
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="6" cy="6" r="4.5" stroke="white" strokeWidth="1.4"/><path d="M10 10l3 3" stroke="white" strokeWidth="1.4" strokeLinecap="round"/></svg>
+              Hitta mina foton
             </button>
           </div>
         )}
 
+        {mode === 'searching' && (
+          <div style={{ padding: '36px 26px', textAlign: 'center' }}>
+            <div style={{ position: 'relative', width: 80, height: 80, margin: '0 auto 24px' }}>
+              <div style={{ position: 'absolute', inset: -8, borderRadius: '50%', border: '1.5px solid var(--brand)', opacity: 0.2, animation: 'pulseRing 1.8s ease-out infinite' }} />
+              <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', background: 'var(--grad)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white' }}>
+                <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><circle cx="12" cy="12" r="8" stroke="white" strokeWidth="1.8"/><path d="M18 18l6 6" stroke="white" strokeWidth="1.8" strokeLinecap="round"/></svg>
+              </div>
+            </div>
+            <div style={{ fontSize: 38, fontWeight: 900, color: 'var(--text-1)', letterSpacing: '-0.04em', lineHeight: 1 }}>
+              {procSecs}<span style={{ fontSize: 16, color: 'var(--text-3)', fontWeight: 500 }}>s</span>
+            </div>
+            <p style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 24 }}>AI söker igenom foton…</p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, textAlign: 'left' }}>
+              {PROC_STEPS.map((step, i) => {
+                const s = procStep > i ? 'done' : procStep === i ? 'active' : 'pending'
+                return (
+                  <div key={step.label} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 12px', borderRadius: 10, background: s === 'done' ? 'rgba(34,197,94,0.07)' : s === 'active' ? 'var(--brand-light)' : 'var(--surface-2)', opacity: s === 'pending' ? 0.45 : 1, transition: 'all .3s' }}>
+                    <div style={{ width: 22, height: 22, borderRadius: '50%', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: s === 'done' ? 'rgba(34,197,94,0.15)' : 'transparent' }}>
+                      {s === 'done' && <svg width="11" height="11" viewBox="0 0 11 11" fill="none"><path d="M2 5.5l2.5 2.5 4.5-4.5" stroke="var(--success)" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                      {s === 'active' && <div className="ps-spin ps-spin-sm" />}
+                      {s === 'pending' && <div style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--text-3)' }} />}
+                    </div>
+                    <div>
+                      <p style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-1)' }}>{step.label}</p>
+                      <p style={{ fontSize: 10, color: 'var(--text-3)' }}>{step.sub}</p>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
+
         {mode === 'waitlist' && (
-          <div className="w-full space-y-5 text-center">
-            <div className="text-3xl">⏳</div>
-            <p className="text-base font-bold text-neutral-900">Foton är inte klara än</p>
-            <p className="text-sm text-neutral-500">Lämna din email så skickar vi länken direkt.</p>
+          <div style={{ padding: 28, textAlign: 'center' }}>
+            <div style={{ width: 48, height: 48, borderRadius: '50%', background: 'var(--brand-light)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 14px', color: 'var(--brand)' }}>
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="8" stroke="currentColor" strokeWidth="1.4"/><path d="M10 5.5v5.5M10 13.5v.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/></svg>
+            </div>
+            <h2 style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-1)', marginBottom: 5 }}>Foton är inte klara än</h2>
+            <p style={{ fontSize: 13, color: 'var(--text-3)', marginBottom: 20, lineHeight: 1.6 }}>Lämna din e-post — vi skickar länken när foton är klara.</p>
             {!waitlistDone ? (
-              <div className="space-y-3">
-                <input type="email" value={waitlistEmail} onChange={e => setWaitlistEmail(e.target.value)} placeholder="din@email.se" className="input" />
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <input type="email" value={waitlistEmail} onChange={e => setWaitlistEmail(e.target.value)} placeholder="din@email.se" className="ps-input" />
                 <button onClick={async () => {
                   if (!event || !waitlistEmail) return
-                  await fetch(`${API_URL}/waitlist`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ event_id: event.id, email: waitlistEmail }) })
+                  await fetch(`${API_URL}/waitlist`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ event_id: event.id, email: waitlistEmail }) })
                   setWaitlistDone(true)
-                }} className="w-full bg-neutral-900 text-white text-sm font-bold py-3.5 rounded-xl">Meddela mig</button>
+                }} disabled={!waitlistEmail} className="ps-btn ps-btn-primary" style={{ width: '100%', justifyContent: 'center', padding: '12px' }}>
+                  Meddela mig
+                </button>
               </div>
             ) : (
-              <div className="bg-green-50 border border-green-100 rounded-xl p-4">
-                <p className="text-sm font-bold text-green-700">Registrerad! Vi hör av oss. 🎉</p>
+              <div style={{ background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.18)', borderRadius: 12, padding: 18 }}>
+                <p style={{ fontSize: 13, fontWeight: 700, color: '#16a34a' }}>Registrerad! Vi hör av oss.</p>
               </div>
             )}
           </div>
         )}
-        <p className="mt-8 text-xs text-neutral-400 text-center">Selfien raderas inom 24h · <Link href="/privacy" className="underline">Integritetspolicy</Link></p>
-      </main>
-    </div>
-  )
-}
-
-function Splash({ title, sub }: { title: string; sub: string }) {
-  return (
-    <div className="min-h-screen bg-white flex items-center justify-center px-6">
-      <div className="text-center">
-        <div className="w-12 h-12 bg-neutral-100 rounded-2xl flex items-center justify-center mx-auto mb-4">
-          <svg className="w-6 h-6 text-neutral-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
-        </div>
-        <h1 className="text-lg font-bold text-neutral-900 mb-1">{title}</h1>
-        <p className="text-sm text-neutral-500">{sub}</p>
       </div>
+
+      <p style={{ marginTop: 18, fontSize: 11, color: 'var(--text-3)', textAlign: 'center' }}>
+        Selfien raderas inom 24h ·{' '}
+        <Link href="/privacy" style={{ color: 'var(--brand)', textDecoration: 'none' }}>Integritetspolicy</Link>
+      </p>
     </div>
   )
 }

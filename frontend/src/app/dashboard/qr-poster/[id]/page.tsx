@@ -1,15 +1,124 @@
 'use client'
-
 import { useEffect, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import QRCode from 'qrcode'
 import { createClient } from '@/lib/supabase/client'
-import { Button } from '@/components/ui/Button'
 import { getEventUrl } from '@/lib/utils'
 import type { Event } from '@/types'
 
-type Template = 'minimal' | 'elegant' | 'bold'
+type Template = 'gradient' | 'white' | 'dark' | 'blush'
+const ACCENT_COLORS = ['#4F6EF7','#7C3AED','#EC4899','#F59E0B','#22C55E','#0EA5E9']
+
+// 3D QR icon miniature
+const QRMini = ({ size = 40 }: { size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 40 40" fill="none">
+    <rect x="2" y="2" width="16" height="16" rx="3" stroke="url(#qrG)" strokeWidth="2"/>
+    <rect x="5" y="5" width="10" height="10" rx="1" fill="url(#qrG)" opacity="0.3"/>
+    <rect x="22" y="2" width="16" height="16" rx="3" stroke="url(#qrG)" strokeWidth="2"/>
+    <rect x="25" y="5" width="10" height="10" rx="1" fill="url(#qrG)" opacity="0.3"/>
+    <rect x="2" y="22" width="16" height="16" rx="3" stroke="url(#qrG)" strokeWidth="2"/>
+    <rect x="5" y="25" width="10" height="10" rx="1" fill="url(#qrG)" opacity="0.3"/>
+    <rect x="22" y="22" width="5" height="5" fill="url(#qrG)"/>
+    <rect x="29" y="22" width="5" height="5" fill="url(#qrG)"/>
+    <rect x="35" y="22" width="3" height="5" fill="url(#qrG)"/>
+    <rect x="22" y="29" width="5" height="5" fill="url(#qrG)"/>
+    <rect x="29" y="29" width="5" height="5" fill="url(#qrG)"/>
+    <rect x="35" y="29" width="3" height="9" fill="url(#qrG)"/>
+    <defs>
+      <linearGradient id="qrG" x1="2" y1="2" x2="38" y2="38" gradientUnits="userSpaceOnUse">
+        <stop stopColor="#4F6EF7"/>
+        <stop offset="1" stopColor="#7C3AED"/>
+      </linearGradient>
+    </defs>
+  </svg>
+)
+
+// Steps figure SVG
+const StepsFigure = () => (
+  <svg width="180" height="40" viewBox="0 0 180 40" fill="none">
+    {[
+      {x:0, label:'1', text:'Skanna QR'},
+      {x:60, label:'2', text:'Ta selfie'},
+      {x:120, label:'3', text:'Se foton'},
+    ].map(step => (
+      <g key={step.x}>
+        <circle cx={step.x+16} cy={16} r={12} fill="url(#stepG)"/>
+        <text x={step.x+16} y={21} textAnchor="middle" fill="white" fontSize="10" fontWeight="700" fontFamily="Outfit,sans-serif">{step.label}</text>
+        <text x={step.x+16} y={36} textAnchor="middle" fill="#666" fontSize="9" fontFamily="Outfit,sans-serif">{step.text}</text>
+        {step.x < 120 && <line x1={step.x+30} y1={16} x2={step.x+58} y2={16} stroke="url(#stepG)" strokeWidth="1.5" strokeDasharray="3 2"/>}
+      </g>
+    ))}
+    <defs>
+      <linearGradient id="stepG" x1="0" y1="0" x2="180" y2="0" gradientUnits="userSpaceOnUse">
+        <stop stopColor="#4F6EF7"/>
+        <stop offset="1" stopColor="#7C3AED"/>
+      </linearGradient>
+    </defs>
+  </svg>
+)
+
+function PosterPreview({ template, eventName, dateStr, qrDataUrl, accentColor }: {
+  template: Template, eventName: string, dateStr: string, qrDataUrl: string, accentColor: string
+}) {
+  const isGradient = template === 'gradient'
+  const isDark = template === 'dark'
+  const isBlush = template === 'blush'
+  const isWhite = template === 'white'
+
+  const bg = isGradient ? `linear-gradient(135deg, ${accentColor} 0%, #7C3AED 100%)` :
+             isDark ? '#0D0E1A' :
+             isBlush ? '#FFF0F8' :
+             '#FFFFFF'
+  const headingColor = (isGradient || isDark) ? '#fff' : '#0D0E1A'
+  const subColor = (isGradient || isDark) ? 'rgba(255,255,255,0.7)' : '#5A5F7A'
+  const qrBg = (isGradient || isDark) ? 'rgba(255,255,255,0.95)' : isBlush ? '#fff' : '#F7F8FF'
+  const footerColor = (isGradient || isDark) ? 'rgba(255,255,255,0.4)' : '#8B90A8'
+
+  return (
+    <div style={{background:bg, borderRadius:16, overflow:'hidden', position:'relative', minHeight:480, display:'flex', flexDirection:'column', padding:'32px 28px', textAlign:'center', justifyContent:'space-between'}}>
+      {/* Decorative circles */}
+      {(isGradient || isDark) && <>
+        <div style={{position:'absolute',top:-30,right:-30,width:120,height:120,borderRadius:'50%',background:'rgba(255,255,255,0.06)'}}/>
+        <div style={{position:'absolute',bottom:40,left:-20,width:80,height:80,borderRadius:'50%',background:'rgba(255,255,255,0.04)'}}/>
+      </>}
+
+      <div style={{position:'relative',zIndex:1}}>
+        {/* Logo */}
+        <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:8,marginBottom:20}}>
+          <div style={{width:28,height:28,borderRadius:7,background:isGradient||isDark?'rgba(255,255,255,0.2)':accentColor,display:'flex',alignItems:'center',justifyContent:'center'}}>
+            <svg viewBox="0 0 18 18" fill="none" style={{width:14,height:14}}><path d="M9 2L3 6v6l6 4 6-4V6L9 2z" stroke="#fff" strokeWidth="1.5" strokeLinejoin="round"/><circle cx="9" cy="9" r="2.5" fill="#fff"/></svg>
+          </div>
+          <span style={{fontSize:14,fontWeight:700,color:headingColor}}>PixSnap</span>
+        </div>
+
+        {/* Event name */}
+        <h1 style={{fontSize:22,fontWeight:800,color:headingColor,margin:'0 0 6px',lineHeight:1.2,letterSpacing:'-0.02em'}}>
+          {eventName || 'Ditt eventnamn'}
+        </h1>
+        {dateStr && <p style={{fontSize:12,color:subColor,margin:'0 0 20px'}}>{dateStr}</p>}
+
+        {/* QR code */}
+        <div style={{background:qrBg,borderRadius:12,padding:12,display:'inline-block',boxShadow:'0 4px 20px rgba(0,0,0,0.1)',marginBottom:16}}>
+          {qrDataUrl
+            ? <img src={qrDataUrl} alt="QR" style={{width:140,height:140,display:'block'}}/>
+            : <div style={{width:140,height:140,background:'rgba(91,99,241,0.08)',borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center'}}><QRMini size={80}/></div>
+          }
+        </div>
+
+        <p style={{fontSize:12,color:subColor,margin:'0 0 4px',fontWeight:600}}>Skanna med din kamera</p>
+      </div>
+
+      {/* Steps */}
+      <div style={{position:'relative',zIndex:1}}>
+        <div style={{display:'flex',justifyContent:'center'}}>
+          <StepsFigure/>
+        </div>
+        <p style={{fontSize:10,color:footerColor,marginTop:12}}>Dina foton är klara på ~30 sekunder · Powered by PixSnap · pixsnap.se</p>
+      </div>
+    </div>
+  )
+}
 
 export default function QRPosterPage() {
   const { id } = useParams<{ id: string }>()
@@ -18,7 +127,8 @@ export default function QRPosterPage() {
 
   const [event, setEvent] = useState<Event | null>(null)
   const [qrDataUrl, setQrDataUrl] = useState('')
-  const [template, setTemplate] = useState<Template>('elegant')
+  const [template, setTemplate] = useState<Template>('gradient')
+  const [accentColor, setAccentColor] = useState('#4F6EF7')
 
   useEffect(() => {
     async function load() {
@@ -34,118 +144,100 @@ export default function QRPosterPage() {
     load()
   }, [id, router, supabase])
 
-  if (!event || !qrDataUrl) return (
-    <div className="min-h-screen flex items-center justify-center">
-      <div className="w-5 h-5 border-2 border-neutral-300 border-t-neutral-900 rounded-full animate-spin" />
+  if (!event) return (
+    <div style={{minHeight:'60vh', display:'flex', alignItems:'center', justifyContent:'center'}}>
+      <div className="ps-spin"/>
     </div>
   )
 
   const dateStr = event.date
-    ? new Date(event.date).toLocaleDateString('sv-SE', { year: 'numeric', month: 'long', day: 'numeric' })
+    ? new Date(event.date).toLocaleDateString('sv-SE', { year:'numeric', month:'long', day:'numeric' })
     : ''
 
+  const TEMPLATES: { key: Template; label: string; preview: string }[] = [
+    { key:'gradient', label:'Premium Gradient', preview:`linear-gradient(135deg, ${accentColor}, #7C3AED)` },
+    { key:'white', label:'Clean White', preview:'#FFFFFF' },
+    { key:'dark', label:'Midnight Dark', preview:'#0D0E1A' },
+    { key:'blush', label:'Soft Blush', preview:'#FFF0F8' },
+  ]
+
   return (
-    <div className="min-h-screen bg-neutral-100">
-      {/* Controls */}
-      <div className="no-print bg-white border-b border-neutral-200 px-6 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <Link href={`/dashboard/admin/${id}`} className="text-sm text-neutral-500 hover:text-neutral-800">← Tillbaka</Link>
-          <div className="flex gap-2">
-            {(['minimal', 'elegant', 'bold'] as Template[]).map(t => (
-              <button key={t} onClick={() => setTemplate(t)}
-                className={`px-3 py-1.5 text-xs rounded-md font-medium transition-all ${
-                  template === t ? 'bg-neutral-900 text-white' : 'bg-neutral-100 text-neutral-600 hover:bg-neutral-200'
-                }`}>
-                {t === 'minimal' ? '◻ Minimal' : t === 'elegant' ? '◈ Elegant' : '◼ Bold'}
-              </button>
-            ))}
-          </div>
+    <div style={{fontFamily:'Inter,sans-serif'}}>
+      {/* Top bar */}
+      <div className="no-print" style={{display:'flex', alignItems:'center', gap:16, marginBottom:32, flexWrap:'wrap'}}>
+        <Link href={`/dashboard/admin/${id}`} style={{display:'flex', alignItems:'center', gap:6, fontSize:14, color:'var(--text-2)', textDecoration:'none', fontWeight:500, transition:'color 0.2s'}}
+          onMouseEnter={e=>(e.currentTarget as any).style.color='var(--brand)'}
+          onMouseLeave={e=>(e.currentTarget as any).style.color='var(--text-2)'}>
+          ← Tillbaka till event
+        </Link>
+        <div style={{fontSize:20, fontWeight:800, color:'var(--text-1)', letterSpacing:'-0.025em', flex:1}}>
+          QR Poster Generator
         </div>
-        <Button onClick={() => window.print()}>🖨 Skriv ut / Spara PDF</Button>
+        <button onClick={()=>window.print()} style={{display:'flex', alignItems:'center', gap:8, padding:'10px 20px', background:'var(--grad)', color:'#fff', border:'none', borderRadius:11, fontFamily:'Inter,sans-serif', fontSize:14, fontWeight:700, cursor:'pointer', boxShadow:'0 3px 16px rgba(91,99,241,0.32)'}}>
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M4 6V2h6v4M3 6h8a1 1 0 011 1v4H2V7a1 1 0 011-1zM4 11h6" stroke="#fff" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg>
+          Skriv ut / PDF
+        </button>
       </div>
 
-      {/* A4 poster */}
-      <div className="flex justify-center py-8 px-4">
-        <div className="bg-white shadow-2xl print-area" style={{ width: '210mm', minHeight: '297mm' }}>
-
-          {template === 'minimal' && (
-            <div style={{ padding: '40mm 20mm', textAlign: 'center', minHeight: '297mm', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '28px' }}>
-              <p style={{ fontSize: '10px', letterSpacing: '5px', textTransform: 'uppercase', color: '#aaa', margin: 0 }}>PixSnap</p>
-              <h1 style={{ fontSize: '44px', fontWeight: '700', color: '#111', margin: 0, lineHeight: 1.1 }}>{event.name}</h1>
-              {dateStr && <p style={{ fontSize: '14px', color: '#888', margin: 0 }}>{dateStr}</p>}
-              <div style={{ width: '48px', height: '2px', background: '#111', margin: '4px 0' }} />
-              <p style={{ fontSize: '19px', color: '#444', margin: 0, maxWidth: '380px', lineHeight: 1.6 }}>
-                Skanna koden och hitta alla foton på dig från eventet
-              </p>
-              <div style={{ background: '#fff', padding: '16px', border: '1px solid #e5e5e5', borderRadius: '12px' }}>
-                <img src={qrDataUrl} alt="QR" style={{ width: '200px', height: '200px', display: 'block' }} />
-              </div>
-              <p style={{ fontSize: '12px', color: '#bbb', margin: 0 }}>Inga appar behövs · Tar bara 30 sekunder · pixsnap.se</p>
+      <div style={{display:'grid', gridTemplateColumns:'340px 1fr', gap:32, alignItems:'start'}}>
+        {/* LEFT controls */}
+        <div className="no-print" style={{display:'flex', flexDirection:'column', gap:20}}>
+          {/* Templates */}
+          <div style={{background:'var(--glass-bg)', backdropFilter:'var(--glass-blur)', border:'var(--glass-border)', borderRadius:20, padding:20, boxShadow:'var(--glass-shadow)'}}>
+            <div style={{fontSize:11, fontWeight:700, color:'var(--text-3)', textTransform:'uppercase', letterSpacing:'0.1em', marginBottom:14}}>Mall</div>
+            <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:10}}>
+              {TEMPLATES.map(t => (
+                <button key={t.key} onClick={()=>setTemplate(t.key)} style={{
+                  padding:0, border:`2px solid ${template===t.key?'var(--brand)':'rgba(220,225,250,0.9)'}`,
+                  borderRadius:12, cursor:'pointer', overflow:'hidden', background:'none', transition:'all 0.2s',
+                }}>
+                  <div style={{height:64, background:t.preview, borderRadius:10}}/>
+                  <div style={{padding:'6px 8px', fontSize:11, fontWeight:600, color:'var(--text-1)', textAlign:'left', background:'white'}}>{t.label}</div>
+                </button>
+              ))}
             </div>
-          )}
+          </div>
 
-          {template === 'elegant' && (
-            <div style={{ minHeight: '297mm', display: 'flex', flexDirection: 'column' }}>
-              <div style={{ background: '#111', padding: '52px 44px 44px', textAlign: 'center' }}>
-                <p style={{ fontSize: '10px', letterSpacing: '5px', textTransform: 'uppercase', color: '#666', margin: '0 0 20px' }}>PixSnap · Eventfoto</p>
-                <h1 style={{ fontSize: '40px', fontWeight: '700', color: '#fff', margin: '0 0 10px', lineHeight: 1.1 }}>{event.name}</h1>
-                {dateStr && <p style={{ fontSize: '14px', color: '#666', margin: 0 }}>{dateStr}</p>}
-              </div>
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '48px 40px', textAlign: 'center', gap: '28px' }}>
-                <p style={{ fontSize: '22px', color: '#111', fontWeight: '600', margin: 0, maxWidth: '360px', lineHeight: 1.4 }}>
-                  Alla dina eventfoton — direkt i din hand
-                </p>
-                <p style={{ fontSize: '15px', color: '#777', margin: 0, maxWidth: '340px', lineHeight: 1.7 }}>
-                  Skanna QR-koden, ta en selfie och se alla foton fotografen tagit på dig. Inga appar, inga konton behövs.
-                </p>
-                <div style={{ position: 'relative', padding: '20px' }}>
-                  <div style={{ position: 'absolute', inset: 0, border: '1.5px solid #ddd', borderRadius: '20px' }} />
-                  <div style={{ background: '#fff', padding: '16px', borderRadius: '8px', boxShadow: '0 2px 12px rgba(0,0,0,0.06)' }}>
-                    <img src={qrDataUrl} alt="QR" style={{ width: '220px', height: '220px', display: 'block' }} />
-                  </div>
-                </div>
-                <div style={{ display: 'flex', gap: '28px' }}>
-                  {['📸 Hitta dina foton', '⚡ 30 sekunder', '🔒 Säkert & privat'].map(item => (
-                    <p key={item} style={{ fontSize: '12px', color: '#888', margin: 0 }}>{item}</p>
-                  ))}
-                </div>
-              </div>
-              <div style={{ background: '#fafafa', borderTop: '1px solid #eee', padding: '18px 40px', textAlign: 'center' }}>
-                <p style={{ fontSize: '11px', color: '#bbb', margin: 0 }}>pixsnap.se · Selfier raderas automatiskt inom 24 timmar</p>
-              </div>
+          {/* Accent color */}
+          <div style={{background:'var(--glass-bg)', backdropFilter:'var(--glass-blur)', border:'var(--glass-border)', borderRadius:20, padding:20, boxShadow:'var(--glass-shadow)'}}>
+            <div style={{fontSize:11, fontWeight:700, color:'var(--text-3)', textTransform:'uppercase', letterSpacing:'0.1em', marginBottom:14}}>Accentfärg</div>
+            <div style={{display:'flex', gap:10, flexWrap:'wrap'}}>
+              {ACCENT_COLORS.map(c => (
+                <button key={c} onClick={()=>setAccentColor(c)} style={{
+                  width:32, height:32, borderRadius:'50%', background:c, border:'none', cursor:'pointer',
+                  boxShadow: accentColor===c ? `0 0 0 3px white, 0 0 0 5px ${c}` : 'none',
+                  transition:'box-shadow 0.2s',
+                }}/>
+              ))}
             </div>
-          )}
+          </div>
 
-          {template === 'bold' && (
-            <div style={{ minHeight: '297mm', display: 'flex', flexDirection: 'column', background: '#fff' }}>
-              <div style={{ height: '6px', background: '#111' }} />
-              <div style={{ flex: 1, padding: '44px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
-                <div>
-                  <p style={{ fontSize: '10px', letterSpacing: '5px', textTransform: 'uppercase', color: '#ccc', margin: '0 0 16px' }}>PixSnap</p>
-                  <h1 style={{ fontSize: '56px', fontWeight: '800', color: '#111', margin: 0, lineHeight: 1, letterSpacing: '-2px' }}>{event.name}</h1>
-                  {dateStr && <p style={{ fontSize: '16px', color: '#999', margin: '12px 0 0' }}>{dateStr}</p>}
-                </div>
-                <div style={{ textAlign: 'center', padding: '20px 0' }}>
-                  <p style={{ fontSize: '34px', fontWeight: '800', color: '#111', margin: '0 0 8px', lineHeight: 1.1, letterSpacing: '-1px' }}>
-                    Finns du på<br />eventets bilder?
-                  </p>
-                  <p style={{ fontSize: '16px', color: '#888', margin: '0 0 36px' }}>
-                    Skanna · Ta en selfie · Se alla dina foton
-                  </p>
-                  <div style={{ display: 'inline-block', background: '#111', padding: '20px', borderRadius: '18px' }}>
-                    <img src={qrDataUrl} alt="QR" style={{ width: '230px', height: '230px', display: 'block', filter: 'invert(1)' }} />
-                  </div>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
-                  <div>
-                    <p style={{ fontSize: '12px', color: '#ccc', margin: 0 }}>Powered by</p>
-                    <p style={{ fontSize: '20px', fontWeight: '800', color: '#111', margin: '2px 0 0' }}>PixSnap</p>
-                  </div>
-                  <p style={{ fontSize: '12px', color: '#ccc', margin: 0, textAlign: 'right' }}>pixsnap.se<br />Inga appar behövs</p>
-                </div>
-              </div>
-            </div>
-          )}
+          {/* Download buttons */}
+          <div style={{display:'flex', flexDirection:'column', gap:10}}>
+            <button onClick={()=>window.print()} style={{width:'100%', padding:'13px', background:'var(--grad)', color:'#fff', border:'none', borderRadius:12, fontFamily:'Inter,sans-serif', fontSize:14, fontWeight:700, cursor:'pointer', boxShadow:'0 3px 16px rgba(91,99,241,0.32)', display:'flex', alignItems:'center', justifyContent:'center', gap:8}}>
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 2v7M4 6.5l3 3 3-3M1 12h12" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              Ladda ner PDF
+            </button>
+            <button onClick={async () => {
+              const canvas = document.querySelector('.print-area canvas') as HTMLCanvasElement
+              if (canvas) {
+                const a = document.createElement('a'); a.href = canvas.toDataURL(); a.download = `pixsnap-qr-${event.slug}.png`; a.click()
+              } else window.print()
+            }} style={{width:'100%', padding:'12px', background:'var(--glass-bg)', backdropFilter:'var(--glass-blur)', border:'var(--glass-border)', color:'var(--text-1)', borderRadius:12, fontFamily:'Inter,sans-serif', fontSize:14, fontWeight:600, cursor:'pointer', boxShadow:'var(--glass-shadow)', display:'flex', alignItems:'center', justifyContent:'center', gap:8}}>
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 2v7M4 6.5l3 3 3-3M1 12h12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              Ladda ner PNG
+            </button>
+          </div>
+        </div>
+
+        {/* RIGHT preview */}
+        <div>
+          <div style={{fontSize:11, color:'var(--text-3)', fontWeight:600, textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:16}} className="no-print">
+            Live preview — A4-format
+          </div>
+          <div className="print-area" style={{maxWidth:480, margin:'0 auto'}}>
+            <PosterPreview template={template} eventName={event.name} dateStr={dateStr} qrDataUrl={qrDataUrl} accentColor={accentColor}/>
+          </div>
         </div>
       </div>
 
@@ -153,7 +245,7 @@ export default function QRPosterPage() {
         @media print {
           .no-print { display: none !important; }
           body { margin: 0; background: white; }
-          .print-area { box-shadow: none !important; margin: 0 !important; }
+          .print-area { box-shadow: none !important; max-width: 100% !important; }
           @page { size: A4; margin: 0; }
         }
       `}</style>

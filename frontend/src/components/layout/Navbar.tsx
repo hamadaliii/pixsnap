@@ -1,54 +1,138 @@
 'use client'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 
-export function Navbar({ credits }: { credits?: number }) {
+export const PS_LOGO = (
+  <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+    <path d="M9 1.5L2 5.5v7l7 4 7-4v-7L9 1.5z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" fill="none"/>
+    <circle cx="9" cy="9" r="2.5" fill="currentColor"/>
+  </svg>
+)
+
+interface NavbarProps {
+  variant?: 'default' | 'transparent'
+  showDashboardLinks?: boolean
+}
+
+export function Navbar({ variant = 'default', showDashboardLinks = false }: NavbarProps) {
   const pathname = usePathname()
   const router = useRouter()
   const supabase = createClient()
-  const [showMenu, setShowMenu] = useState(false)
-  const isDashboard = pathname?.startsWith('/dashboard')
+  const [user, setUser] = useState<any>(null)
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [scrolled, setScrolled] = useState(false)
 
-  async function handleSignOut() {
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => setUser(data.user))
+    const handler = () => setScrolled(window.scrollY > 8)
+    window.addEventListener('scroll', handler, { passive: true })
+    return () => window.removeEventListener('scroll', handler)
+  }, [])
+
+  async function signOut() {
     await supabase.auth.signOut()
     router.push('/')
+    router.refresh()
   }
 
+  const isTransparent = variant === 'transparent' && !scrolled
+
   return (
-    <nav className="h-[52px] border-b border-neutral-100 flex items-center justify-between px-5 bg-white sticky top-0 z-50">
-      <Link href="/" className="flex items-center gap-2.5">
-        <div className="w-7 h-7 bg-neutral-900 rounded-[8px] flex items-center justify-center">
-          <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
-            <path strokeLinecap="round" strokeLinejoin="round" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
-          </svg>
+    <nav
+      className="sticky top-0 z-50 h-14 flex items-center justify-between px-5 transition-all"
+      style={{
+        background: isTransparent ? 'transparent' : 'rgba(248,249,252,0.92)',
+        backdropFilter: isTransparent ? 'none' : 'blur(20px)',
+        borderBottom: isTransparent ? 'none' : '1px solid rgba(234,237,244,0.8)',
+        boxShadow: scrolled ? '0 1px 12px rgba(0,0,0,0.06)' : 'none',
+      }}
+    >
+      {/* Logo */}
+      <Link href="/" className="flex items-center gap-2 no-underline" style={{ color: 'var(--text-1)', textDecoration: 'none' }}>
+        <div className="w-8 h-8 rounded-xl flex items-center justify-center text-white" style={{ background: 'var(--grad)' }}>
+          {PS_LOGO}
         </div>
-        <span className="font-bold text-sm text-neutral-900">PixSnap</span>
+        <span style={{ fontWeight: 700, fontSize: 15, color: 'var(--text-1)', letterSpacing: '-0.01em' }}>PixSnap</span>
       </Link>
 
-      {isDashboard && (
-        <div className="relative">
-          <button onClick={() => setShowMenu(!showMenu)}
-            className="w-8 h-8 rounded-full bg-neutral-100 border border-neutral-200 flex items-center justify-center hover:bg-neutral-200 transition-colors">
-            <svg className="w-4 h-4 text-neutral-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-            </svg>
-          </button>
-          {showMenu && (
-            <div className="absolute right-0 top-10 bg-white border border-neutral-100 rounded-xl shadow-lg p-1 min-w-[140px] z-50">
-              <Link href="/dashboard" className="block px-3 py-2 text-sm text-neutral-600 hover:text-neutral-900 hover:bg-neutral-50 rounded-lg transition-colors" onClick={() => setShowMenu(false)}>
-                Dashboard
-              </Link>
-              <div className="h-px bg-neutral-100 my-1" />
-              <button onClick={handleSignOut} className="w-full text-left px-3 py-2 text-sm text-red-500 hover:bg-red-50 rounded-lg transition-colors">
-                Logga ut
-              </button>
-            </div>
-          )}
+      {/* Dashboard nav links */}
+      {showDashboardLinks && (
+        <div className="hidden md:flex items-center gap-1">
+          {[
+            { href: '/dashboard', label: 'Events' },
+            { href: '/dashboard/create-event', label: 'Nytt event' },
+          ].map(({ href, label }) => (
+            <Link key={href} href={href} className="ps-btn-ghost ps-btn ps-btn-sm" style={{ color: pathname === href ? 'var(--brand)' : 'var(--text-2)' }}>
+              {label}
+            </Link>
+          ))}
         </div>
       )}
+
+      {/* Right side */}
+      <div className="flex items-center gap-2">
+        {user ? (
+          <>
+            {/* Logout button — always visible */}
+            <button
+              onClick={signOut}
+              className="ps-btn ps-btn-ghost ps-btn-sm hidden sm:flex"
+              style={{ color: 'var(--text-2)', fontSize: 13 }}
+            >
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                <path d="M5 12H3a1 1 0 01-1-1V3a1 1 0 011-1h2M9.5 9.5L12 7m0 0L9.5 4.5M12 7H5.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+              Logga ut
+            </button>
+
+            {/* Avatar menu (mobile + extra) */}
+            <div className="relative">
+              <button
+                onClick={() => setMenuOpen(!menuOpen)}
+                className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold"
+                style={{ background: 'var(--grad)' }}
+              >
+                {user.email?.[0]?.toUpperCase() ?? 'U'}
+              </button>
+
+              {menuOpen && (
+                <div
+                  className="absolute right-0 top-10 rounded-xl shadow-xl overflow-hidden z-50"
+                  style={{ background: 'var(--surface)', border: '1px solid #EAEDF4', minWidth: 180, boxShadow: 'var(--glass-sh-lg)' }}
+                  onBlur={() => setMenuOpen(false)}
+                >
+                  <div className="px-4 py-3 border-b" style={{ borderColor: '#EAEDF4' }}>
+                    <p style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 2 }}>Inloggad som</p>
+                    <p style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-1)' }}>{user.email}</p>
+                  </div>
+                  <div className="p-1">
+                    <Link href="/dashboard" className="ps-sidebar-link" style={{ fontSize: 13 }} onClick={() => setMenuOpen(false)}>
+                      Dashboard
+                    </Link>
+                    <button onClick={signOut} className="ps-sidebar-link w-full" style={{ fontSize: 13, color: 'var(--danger)' }}>
+                      <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                        <path d="M5 12H3a1 1 0 01-1-1V3a1 1 0 011-1h2M9.5 9.5L12 7m0 0L9.5 4.5M12 7H5.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
+                      </svg>
+                      Logga ut
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </>
+        ) : (
+          <>
+            <Link href="/auth/login" className="ps-btn ps-btn-ghost ps-btn-sm" style={{ fontSize: 13 }}>
+              Logga in
+            </Link>
+            <Link href="/auth/register" className="ps-btn ps-btn-primary ps-btn-sm" style={{ textDecoration: 'none' }}>
+              Kom igång
+            </Link>
+          </>
+        )}
+      </div>
     </nav>
   )
 }

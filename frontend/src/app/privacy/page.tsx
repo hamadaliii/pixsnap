@@ -1,125 +1,50 @@
 import Link from 'next/link'
+import { PS_LOGO } from '@/components/layout/Navbar'
 
-export const metadata = { title: 'Integritetspolicy — PixSnap' }
+const sections = [
+  { title: 'Vad vi samlar in', body: 'Vi samlar in e-postadresser från fotografer som registrerar konton. Från gäster samlar vi in selfies tillfälligt för ansiktsigenkänning — dessa raderas automatiskt inom 24 timmar. Vi lagrar inte permanenta biometriska profiler.' },
+  { title: 'Hur vi använder data', body: 'Selfies används enbart för att matcha gäster mot eventfoton via AWS Rekognition. E-postadresser används för kontohantering och notifikationer om foton. Vi säljer aldrig data till tredje part.' },
+  { title: 'Lagring och säkerhet', body: 'All data lagras inom EU (Supabase Frankfurt, AWS eu-west-1). Vi använder HTTPS för all datatransport. Eventfoton lagras i Supabase Storage med krypterade URL:er.' },
+  { title: 'Dina rättigheter (GDPR)', body: 'Du har rätt att begära tillgång till, rättelse av eller radering av dina personuppgifter. Kontakta oss på support@pixsnap.se. Selfies raderas automatiskt inom 24 timmar utan att du behöver begära det.' },
+  { title: 'Cookies', body: 'Vi använder sessionscookies för inloggning. Vi använder inga marknadsförings- eller spårningscookies.' },
+  { title: 'Kontakt', body: 'För integritetsfrågor, kontakta: support@pixsnap.se' },
+]
 
 export default function PrivacyPage() {
   return (
-    <div className="min-h-screen bg-white">
-      <nav className="h-[56px] border-b border-neutral-100 flex items-center justify-between px-6">
-        <Link href="/" className="flex items-center gap-2">
-          <div className="w-6 h-6 bg-neutral-900 rounded-[7px] flex items-center justify-center">
-            <svg className="w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
-            </svg>
+    <div style={{ minHeight: '100vh', background: 'var(--bg)' }}>
+      <div style={{ height: 52, display: 'flex', alignItems: 'center', padding: '0 24px', borderBottom: '1px solid #EAEDF4', background: 'var(--surface)' }}>
+        <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: 8, textDecoration: 'none', color: 'var(--text-1)' }}>
+          <div style={{ width: 28, height: 28, borderRadius: 8, background: 'var(--grad)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white' }}>
+            {PS_LOGO}
           </div>
-          <span className="font-bold text-sm text-neutral-900">PixSnap</span>
+          <span style={{ fontWeight: 700, fontSize: 14 }}>PixSnap</span>
         </Link>
-        <Link href="/" className="text-sm text-neutral-500 hover:text-neutral-900 transition-colors">← Tillbaka</Link>
-      </nav>
+      </div>
 
-      <main className="max-w-2xl mx-auto px-6 py-16">
-        <div className="mb-10">
-          <h1 className="text-3xl font-bold text-neutral-900 mb-2">Integritetspolicy</h1>
-          <p className="text-sm text-neutral-400">Senast uppdaterad: {new Date().toLocaleDateString('sv-SE')}</p>
-        </div>
+      <div style={{ maxWidth: 680, margin: '0 auto', padding: '48px 24px' }}>
+        <h1 style={{ fontSize: 28, fontWeight: 800, color: 'var(--text-1)', letterSpacing: '-0.025em', marginBottom: 8 }}>
+          Integritetspolicy
+        </h1>
+        <p style={{ fontSize: 13, color: 'var(--text-3)', marginBottom: 36 }}>
+          Senast uppdaterad: April 2026 · GDPR-kompatibel
+        </p>
 
-        <div className="space-y-10 text-neutral-700">
-          {[
-            {
-              title: 'Vad vi samlar in',
-              content: (
-                <ul className="space-y-2 text-sm">
-                  {[
-                    ['Din selfie', 'används uteslutande för ansiktsigenkänning för att hitta dina foton'],
-                    ['Din e-postadress', 'om du väljer att spara en länk till ditt galleri'],
-                    ['IP-adress', 'loggas i samband med ditt samtycke'],
-                    ['Timestamp för samtycke', 'för att dokumentera ditt godkännande'],
-                  ].map(([bold, rest]) => (
-                    <li key={bold} className="flex gap-2">
-                      <span className="text-neutral-300">—</span>
-                      <span><strong className="text-neutral-900">{bold}</strong> — {rest}</span>
-                    </li>
-                  ))}
-                </ul>
-              ),
-            },
-            {
-              title: 'Hur vi använder datan',
-              content: (
-                <ul className="space-y-2 text-sm">
-                  {[
-                    'Din selfie analyseras med AWS Rekognition för att matcha dig mot eventfoton',
-                    'Vi säljer aldrig din data till tredje part',
-                    'Vi använder inte din data för marknadsföring utan ditt uttryckliga samtycke',
-                  ].map(item => (
-                    <li key={item} className="flex gap-2"><span className="text-neutral-300">—</span><span>{item}</span></li>
-                  ))}
-                </ul>
-              ),
-            },
-            {
-              title: 'Lagring och radering',
-              content: (
-                <ul className="space-y-2 text-sm">
-                  {[
-                    ['Selfies', 'raderas automatiskt inom 24 timmar'],
-                    ['Galleri-länken', 'gäller i 30 dagar, sedan raderas sessiondata'],
-                    ['Samtyckes-loggar', 'sparas i 12 månader av juridiska skäl'],
-                  ].map(([bold, rest]) => (
-                    <li key={bold} className="flex gap-2">
-                      <span className="text-neutral-300">—</span>
-                      <span><strong className="text-neutral-900">{bold}</strong> {rest}</span>
-                    </li>
-                  ))}
-                </ul>
-              ),
-            },
-            {
-              title: 'Var datan lagras',
-              content: (
-                <div className="text-sm space-y-1">
-                  <p>All data lagras inom EU:</p>
-                  <ul className="space-y-1 mt-2">
-                    <li className="flex gap-2"><span className="text-neutral-300">—</span><span>Databas och filer: Supabase (Frankfurt, Tyskland)</span></li>
-                    <li className="flex gap-2"><span className="text-neutral-300">—</span><span>Ansiktsigenkänning: AWS Rekognition (eu-west-1, Irland)</span></li>
-                  </ul>
-                </div>
-              ),
-            },
-            {
-              title: 'Biometrisk data',
-              content: <p className="text-sm leading-relaxed">Ansiktsigenkänning är biometrisk data enligt GDPR. Vi behandlar denna data med stöd av ditt uttryckliga samtycke (Art. 9.2a GDPR). Du kan återkalla ditt samtycke när som helst genom att begära radering av dina data.</p>,
-            },
-            {
-              title: 'Dina rättigheter',
-              content: (
-                <ul className="space-y-2 text-sm">
-                  {[
-                    ['Rätt till radering', 'du kan radera dina data direkt från galleriet'],
-                    ['Rätt till tillgång', 'kontakta oss för att se vilken data vi har om dig'],
-                    ['Rätt till portabilitet', 'du kan ladda ner dina foton när som helst'],
-                    ['Rätt att klaga', 'du kan lämna klagomål till Integritetsskyddsmyndigheten (IMY)'],
-                  ].map(([bold, rest]) => (
-                    <li key={bold} className="flex gap-2">
-                      <span className="text-neutral-300">—</span>
-                      <span><strong className="text-neutral-900">{bold}</strong> — {rest}</span>
-                    </li>
-                  ))}
-                </ul>
-              ),
-            },
-            {
-              title: 'Kontakt',
-              content: <p className="text-sm">Frågor om integritet? Kontakta oss på <strong className="text-neutral-900">privacy@pixsnap.se</strong></p>,
-            },
-          ].map(({ title, content }) => (
-            <div key={title}>
-              <h2 className="text-base font-semibold text-neutral-900 mb-3">{title}</h2>
-              {content}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+          {sections.map(({ title, body }) => (
+            <div key={title} className="ps-card" style={{ padding: '22px 24px' }}>
+              <h2 style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-1)', marginBottom: 8 }}>{title}</h2>
+              <p style={{ fontSize: 14, color: 'var(--text-2)', lineHeight: 1.7 }}>{body}</p>
             </div>
           ))}
         </div>
-      </main>
+
+        <div style={{ marginTop: 36, paddingTop: 24, borderTop: '1px solid #EAEDF4' }}>
+          <Link href="/" style={{ fontSize: 13, color: 'var(--brand)', textDecoration: 'none', fontWeight: 600 }}>
+            ← Tillbaka till startsidan
+          </Link>
+        </div>
+      </div>
     </div>
   )
 }

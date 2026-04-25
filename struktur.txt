@@ -1,67 +1,180 @@
-frontend/src
-├── app
-│   ├── admin
-│   │   └── page.tsx
-│   ├── auth
-│   │   ├── callback
-│   │   │   └── route.ts
-│   │   ├── login
-│   │   │   └── page.tsx
-│   │   └── register
-│   │       └── page.tsx
-│   ├── dashboard
-│   │   ├── admin
-│   │   │   └── [id]
-│   │   │       └── page.tsx
-│   │   ├── create-event
-│   │   │   └── page.tsx
-│   │   ├── qr-poster
-│   │   │   └── [id]
-│   │   │       └── page.tsx
-│   │   ├── layout.tsx
-│   │   ├── loading.tsx
-│   │   └── page.tsx
-│   ├── event
-│   │   └── [id]
-│   │       └── page.tsx
-│   ├── privacy
-│   │   └── page.tsx
-│   ├── purchase
-│   │   └── success
-│   │       └── page.tsx
-│   ├── results
-│   │   └── [id]
-│   │       └── page.tsx
-│   ├── session
-│   │   └── [token]
-│   │       └── page.tsx
-│   ├── error.tsx
-│   ├── globals.css
-│   ├── layout.tsx
-│   ├── not-found.tsx
-│   └── page.tsx
-├── components
-│   ├── layout
-│   │   └── Navbar.tsx
-│   └── ui
-│       ├── Button.tsx
-│       ├── Confetti.tsx
-│       ├── Input.tsx
-│       ├── PhotoGrid.tsx
-│       ├── PixieChatbot.tsx
-│       ├── QRDisplay.tsx
-│       ├── Spinner.tsx
-│       └── Toast.tsx
-├── lib
-│   ├── supabase
-│   │   ├── client.ts
-│   │   ├── middleware.ts
-│   │   └── server.ts
-│   └── utils.ts
-├── styles
-│   └── global.css
-├── types
-│   └── index.ts
-└── middleware.ts
+You are now fixing the entire PixSnap frontend, not only redesigning it.
 
-29 directories, 36 files
+Goal:
+Make PixSnap a fully functional, premium, responsive SaaS frontend with one unified visual system across all visible pages. It must look better than Photier.com, but NOT copy it. PixSnap must have its own identity: premium glassmorphism + soft 3D miniature/statue/event-world theme. No emojis. No basic default icons. No dummy-only UI. No broken buttons.
+
+Project:
+Next.js 14 + TypeScript + Tailwind.
+Frontend path: frontend/src
+Visible routes:
+/
+auth/login
+auth/register
+dashboard
+dashboard/create-event
+dashboard/admin/[id]
+dashboard/qr-poster/[id]
+event/[id]
+results/[id]
+session/[token]
+privacy
+purchase/success
+admin
+error
+not-found
+
+Absolute rules:
+1. Do not break existing backend/API/Supabase/AWS/Stripe logic.
+2. Keep current functionality and improve it.
+3. All buttons, forms, links, toggles, uploads, navigation, logout, poster downloads, guest flow, photo grid actions, payment actions, and admin controls must work.
+4. Replace dummy data with real existing data wherever available.
+5. Mobile-first, then tablet, desktop, ultra-wide. Every page must be responsive and polished.
+6. No emojis anywhere.
+7. No generic/basic icon look. Use custom minimal SVG/3D-inspired symbols or refined lucide icons only if heavily styled.
+8. One global theme across all pages.
+9. Fix layout issues, overflow, bad spacing, broken mobile states, and inconsistent components.
+10. Do not remove working features.
+
+Design system:
+Create a global PixSnap theme:
+- light premium SaaS
+- glassmorphism cards
+- white/off-white base
+- soft blue/violet gradients
+- subtle rainbow accents only for hero borders/highlights
+- large rounded corners
+- soft shadows
+- clean typography
+- elegant 3D miniature/statue visual direction
+- photo/event/QR/selfie miniature world
+- no childish Minecraft copy, but inspired by miniature collectible scenes
+
+Landing page:
+Make it next-level and conversion-focused:
+- animated hero with line-by-line text reveal using blur + fade + slide
+- floating glass cards
+- soft moving gradient blobs
+- sticky scroll storytelling for “How it works”
+- scroll reveal cards with Framer Motion
+- magnetic CTA buttons
+- hover tilt feature/pricing cards
+- animated gradient border glow on important cards
+- animated counters for stats
+- partner logos
+- use cases
+- testimonials
+- pricing preview
+- FAQ
+- strong final CTA
+It must feel alive, premium, and clear within 5 seconds.
+
+Required animations:
+- hero text reveal
+- scroll reveal
+- magnetic buttons
+- floating glass cards
+- gradient blob background
+- page transitions
+- counter animation
+- hover tilt cards
+- animated border glow
+- sticky scroll storytelling
+
+Dashboard:
+Fix and upgrade:
+- add a clear visible logout/sign out button
+- dashboard sidebar/topbar must be responsive
+- event cards must use real events
+- stats should use real data where available
+- empty states must be beautiful and useful
+- “New Event”, “QR Poster”, “Analytics”, “Billing/Profile” must not be dead unless intentionally unavailable; unavailable features must show a clean coming-soon state, not broken behavior.
+
+Create Event:
+Make the flow fully functional:
+- event details
+- upload photos
+- privacy/PIN
+- payment toggle
+- watermark toggle
+- browse all toggle
+- package price toggle
+- live preview
+- validation
+- continue/publish buttons must work
+- no fake progress steps that do nothing
+
+Event Admin:
+Fix photo management:
+- uploaded photos must render correctly
+- HEIC photos must display through processed JPEG/thumbnail fallback
+- show status clearly: pending/indexing/ready/failed
+- yellow-dot photos mean not fully indexed; explain this in UI and add retry/reprocess action if backend endpoint exists
+- if backend endpoint does not exist, add safe frontend action placeholder with clear disabled state, not fake success
+- delete button must work
+- toggles must update real event settings
+- show upload progress and indexing progress clearly
+
+QR Poster:
+Make it a premium poster studio:
+- live A4 preview
+- multiple poster styles
+- PDF/PNG download buttons must work
+- share link must work
+- poster must be print-safe
+- mobile layout must not break
+
+Guest Event Page:
+Make the guest flow frictionless:
+- consent
+- selfie capture
+- processing
+- matching
+- privacy reassurance
+- session memory
+- clear loading states
+- no confusing dead screens
+
+Results Page:
+Make it premium:
+- matched photo grid
+- favorites
+- download/purchase actions
+- AI thank-card feature if existing
+- browse all if enabled
+- clear empty/no-match state
+- watermark display must be correct
+- mobile gallery must be excellent
+
+Auth:
+Login/register must match the theme:
+- glass cards
+- clean validation
+- working navigation
+- no redirect bugs
+- responsive
+
+Global components:
+Refactor shared UI:
+Button, Input, Toast, Spinner, PhotoGrid, QRDisplay, Navbar, PixieChatbot, Confetti, Cards, Tabs, Toggles, Modal, EmptyState.
+All must be consistent and reusable.
+
+Bug fixes required:
+1. Fix globals.css import so app uses the correct global styles.
+2. Fix HEIC rendering by using processed JPEG/thumbnail URLs where available.
+3. Fix photos with yellow indexing dots: show real status and allow retry/reprocess if supported.
+4. Add visible logout button.
+5. Fix all broken/non-working buttons.
+6. Fix mobile responsiveness everywhere.
+7. Remove emojis from UI text.
+8. Replace basic/dummy icon style.
+9. Make all visible pages match the same theme.
+
+Implementation rules:
+- Only rewrite components/pages that need redesign or functional repair.
+- Use TypeScript safely.
+- Do not invent API routes unless necessary; if needed, clearly create matching frontend calls and safe fallbacks.
+- Preserve existing environment variables and backend assumptions.
+- After changes, run:
+  npm run lint
+  npm run build
+and fix all errors.

@@ -1,34 +1,21 @@
 'use client'
-
 import { useEffect } from 'react'
-import { Button } from '@/components/ui/Button'
+import { PS_LOGO } from '@/components/layout/Navbar'
 
-export default function GlobalError({
-  error,
-  reset,
-}: {
-  error: Error & { digest?: string }
-  reset: () => void
-}) {
-  useEffect(() => {
-    // Log to error tracking service in production
-    console.error(error)
-  }, [error])
-
+export default function Error({ error, reset }: { error: Error; reset: () => void }) {
+  useEffect(() => { console.error(error) }, [error])
   return (
-    <div className="min-h-screen bg-white dark:bg-neutral-950 flex flex-col items-center justify-center px-6 text-center">
-      <p className="text-xs font-mono text-neutral-400 mb-4">Error</p>
-      <h1 className="text-2xl font-semibold tracking-tight text-neutral-900 dark:text-neutral-50 mb-2">
-        Something went wrong
-      </h1>
-      <p className="text-sm text-neutral-500 dark:text-neutral-400 mb-8 max-w-sm">
-        An unexpected error occurred. Try refreshing the page or going back.
-      </p>
-      <div className="flex gap-3">
-        <Button onClick={reset}>Try again</Button>
-        <Button variant="secondary" onClick={() => window.location.href = '/'}>
-          Go home
-        </Button>
+    <div style={{ minHeight: '100vh', background: 'var(--bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+      <div style={{ textAlign: 'center', maxWidth: 380 }}>
+        <div style={{ width: 48, height: 48, borderRadius: 14, background: 'rgba(239,68,68,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px' }}>
+          <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
+            <path d="M11 2L2 19h18L11 2z" stroke="var(--danger)" strokeWidth="1.6" strokeLinejoin="round"/>
+            <path d="M11 9v4M11 15.5v.5" stroke="var(--danger)" strokeWidth="1.6" strokeLinecap="round"/>
+          </svg>
+        </div>
+        <h1 style={{ fontSize: 20, fontWeight: 700, color: 'var(--text-1)', marginBottom: 8 }}>Något gick fel</h1>
+        <p style={{ fontSize: 14, color: 'var(--text-3)', marginBottom: 24 }}>{error.message || 'Ett oväntat fel uppstod'}</p>
+        <button onClick={reset} className="ps-btn ps-btn-primary ps-btn-sm">Försök igen</button>
       </div>
     </div>
   )
