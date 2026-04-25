@@ -372,7 +372,7 @@ export default function LandingPage() {
       {/* ── HOW IT WORKS ── */}
       <section id="how" style={{ padding: 'clamp(60px,10vw,100px) clamp(16px,4vw,40px)', background: 'var(--bg)' }}>
         <div style={{ maxWidth: 1100, margin: '0 auto' }}>
-          <Reveal style={{ textAlign: 'center', marginBottom: 56 } as any}>
+          <Reveal className="text-center mb-14">
             <p style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--brand)', marginBottom: 10 }}>Hur det fungerar</p>
             <h2 style={{ fontSize: 'clamp(26px,4vw,40px)', fontWeight: 800, color: 'var(--text-1)', letterSpacing: '-0.025em', marginBottom: 12 }}>Tre steg. Det är allt.</h2>
             <p style={{ fontSize: 16, color: 'var(--text-2)', maxWidth: 460, margin: '0 auto', lineHeight: 1.7 }}>Från uppladdning till gästernas händer på under 30 sekunder per gäst.</p>
@@ -429,7 +429,7 @@ export default function LandingPage() {
       {/* ── FEATURES ── */}
       <section id="features" style={{ padding: 'clamp(60px,10vw,100px) clamp(16px,4vw,40px)', background: 'var(--surface)' }}>
         <div style={{ maxWidth: 1100, margin: '0 auto' }}>
-          <Reveal style={{ textAlign: 'center', marginBottom: 52 } as any}>
+          <Reveal className="text-center mb-14">
             <p style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--brand)', marginBottom: 10 }}>Features</p>
             <h2 style={{ fontSize: 'clamp(26px,4vw,40px)', fontWeight: 800, color: 'var(--text-1)', letterSpacing: '-0.025em' }}>Allt du behöver</h2>
           </Reveal>
@@ -495,7 +495,7 @@ export default function LandingPage() {
       {/* ── FAQ ── */}
       <section id="faq" style={{ padding: 'clamp(60px,8vw,80px) clamp(16px,4vw,40px)', background: 'var(--surface)' }}>
         <div style={{ maxWidth: 680, margin: '0 auto' }}>
-          <Reveal style={{ textAlign: 'center', marginBottom: 40 } as any}>
+          <Reveal className="text-center mb-14">
             <p style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--brand)', marginBottom: 10 }}>FAQ</p>
             <h2 style={{ fontSize: 'clamp(24px,3.5vw,36px)', fontWeight: 800, color: 'var(--text-1)', letterSpacing: '-0.025em' }}>Vanliga frågor</h2>
           </Reveal>

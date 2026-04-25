@@ -3,16 +3,15 @@ const nextConfig = {
   images: {
     remotePatterns: [
       {
-        protocol: 'https',
-        hostname: '*.supabase.co',
-        pathname: '/storage/v1/object/public/**',
+        protocol: "https",
+        hostname: "*.supabase.co",
+        pathname: "/storage/v1/object/public/**",
       },
     ],
   },
-  experimental: {
-    turbo: {
-      root: '.',
-    },
-  },
-}
-module.exports = nextConfig
+
+  // Next 16 + Turbopack safe config
+  turbopack: {},
+};
+
+module.exports = nextConfig;
