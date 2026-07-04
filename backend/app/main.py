@@ -29,6 +29,9 @@ from app.plans import (
     email_configured, enqueue_email, process_email_queue,
     webhook_already_processed, mark_webhook_processed, run_cleanup,
 )
+from app.storage import (
+    get_storage_provider, get_provider_by_name, provider_configured,
+)
 
 def convert_to_jpeg_if_needed(image_bytes: bytes, filename: str) -> bytes:
     """Konvertera HEIC/HEIF till JPEG om nödvändigt."""
@@ -364,15 +367,14 @@ def embed_photo(data: EmbedRequest):
         thumb_path   = f"thumbs/{base}.webp"
         preview_path = f"previews/{base}.webp"
 
-        supabase.storage.from_("event-photos").upload(
-            thumb_path, versions["thumb_bytes"],
-            {"content-type": "image/webp", "upsert": "true", "cache-control": "public, max-age=31536000, immutable"})
-        supabase.storage.from_("event-photos").upload(
-            preview_path, versions["preview_bytes"],
-            {"content-type": "image/webp", "upsert": "true", "cache-control": "public, max-age=31536000, immutable"})
+        # Upload watermarked thumb + preview to the configured provider
+        # (Supabase / R2 / S3). Falls back to Supabase if R2/S3 not configured.
+        store = get_storage_provider(supabase)  # honours STORAGE_PROVIDER env
+        thumb_res   = store.upload_object(thumb_path,   versions["thumb_bytes"],   "image/webp")
+        preview_res = store.upload_object(preview_path, versions["preview_bytes"], "image/webp")
 
-        thumb_url   = supabase.storage.from_("event-photos").get_public_url(thumb_path)
-        preview_url = supabase.storage.from_("event-photos").get_public_url(preview_path)
+        thumb_url   = thumb_res.get("public_url")
+        preview_url = preview_res.get("public_url")
 
         # Keep watermark_url pointing at the preview for backward compatibility.
         supabase.table("photos").update({
@@ -388,6 +390,13 @@ def embed_photo(data: EmbedRequest):
             "hash": photo_hash,
             "face_count": faces_found,
             "rekognition_face_ids": face_ids,
+            # provider metadata
+            "thumb_storage_provider":   thumb_res.get("provider"),
+            "thumb_bucket":             thumb_res.get("bucket"),
+            "thumb_path":               thumb_res.get("path"),
+            "preview_storage_provider": preview_res.get("provider"),
+            "preview_bucket":           preview_res.get("bucket"),
+            "preview_path":             preview_res.get("path"),
         }).eq("id", data.photo_id).execute()
 
         print(f"[embed] {data.photo_id[:8]}... {faces_found} ansikten (reused={bool(reused_face_ids)})")
@@ -936,6 +945,181 @@ def admin_email_status():
         return {"configured": email_configured(), "pending": pending, "failed": failed, "logs": logs}
     except Exception as e:
         return {"configured": email_configured(), "pending": 0, "failed": 0, "logs": [], "error": str(e)}
+
+
+@app.get("/admin/storage/overview")
+def admin_storage_overview():
+    """SuperAdmin: per-event storage/provider + cost estimate. Real data only."""
+    try:
+        # per-event summary from the view (falls back to raw aggregate)
+        try:
+            rows = supabase.table("event_storage_summary").select("*").execute().data or []
+        except Exception:
+            rows = []
+            evs = supabase.table("events").select("id, name").execute().data or []
+            for e in evs:
+                ph = supabase.table("photos").select("thumb_size_bytes, preview_size_bytes, original_size_bytes, thumb_storage_provider").eq("event_id", e["id"]).execute().data or []
+                rows.append({
+                    "event_id": e["id"], "event_name": e["name"], "photo_count": len(ph),
+                    "thumb_bytes": sum(p.get("thumb_size_bytes") or 0 for p in ph),
+                    "preview_bytes": sum(p.get("preview_size_bytes") or 0 for p in ph),
+                    "original_bytes": sum(p.get("original_size_bytes") or 0 for p in ph),
+                    "thumb_provider": (ph[0].get("thumb_storage_provider") if ph else "supabase"),
+                })
+
+        # provider totals
+        totals = {"supabase": 0, "r2": 0, "s3": 0}
+        for r in rows:
+            prov = r.get("thumb_provider") or "supabase"
+            served = (r.get("thumb_bytes", 0) or 0) + (r.get("preview_bytes", 0) or 0)
+            totals[prov] = totals.get(prov, 0) + served
+
+        return {
+            "events": rows,
+            "provider_totals": totals,
+            "configured": {
+                "supabase": True,
+                "r2": provider_configured("r2"),
+                "s3": provider_configured("s3"),
+            },
+            "current_provider": os.environ.get("STORAGE_PROVIDER", "supabase"),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class StorageMigrateRequest(BaseModel):
+    event_id: str
+    target_provider: str          # 'r2' | 's3' | 'supabase'
+    kinds: List[str] = ["thumb", "preview"]  # which assets to migrate
+    dry_run: bool = True
+    admin_email: str = ""
+
+
+@app.post("/admin/storage/migrate")
+def admin_storage_migrate(data: StorageMigrateRequest):
+    """
+    Migrate an event's thumb/preview (and optionally original) files to a new
+    provider. Copies bytes; does NOT delete the Supabase source until verified.
+    dry_run=True only reports what would move.
+    """
+    try:
+        if not provider_configured(data.target_provider):
+            raise HTTPException(status_code=400, detail=f"Provider '{data.target_provider}' saknar credentials")
+
+        photos = supabase.table("photos").select(
+            "id, thumb_url, preview_url, thumb_path, preview_path, "
+            "thumb_storage_provider, preview_storage_provider, storage_path, public_url"
+        ).eq("event_id", data.event_id).execute().data or []
+
+        target = get_provider_by_name(supabase, data.target_provider)
+        moved = {"thumb": 0, "preview": 0, "original": 0}
+        planned = len(photos)
+        errors = []
+
+        if data.dry_run:
+            return {"dry_run": True, "photos": planned, "kinds": data.kinds,
+                    "target": data.target_provider, "would_move": planned * len(data.kinds)}
+
+        for p in photos:
+            for kind in data.kinds:
+                try:
+                    if kind == "thumb":
+                        src_prov = get_provider_by_name(supabase, p.get("thumb_storage_provider") or "supabase")
+                        path = p.get("thumb_path") or f"thumbs/{data.event_id}/{p['id']}.webp"
+                    elif kind == "preview":
+                        src_prov = get_provider_by_name(supabase, p.get("preview_storage_provider") or "supabase")
+                        path = p.get("preview_path") or f"previews/{data.event_id}/{p['id']}.webp"
+                    elif kind == "original":
+                        src_prov = get_provider_by_name(supabase, "supabase")
+                        path = p.get("storage_path")
+                    else:
+                        continue
+                    if not path:
+                        continue
+
+                    # read from source, write to target (same key)
+                    body = src_prov.download_object(path)
+                    ctype = "image/webp" if kind in ("thumb", "preview") else "image/jpeg"
+                    res = target.upload_object(path, body, ctype)
+
+                    update = {}
+                    if kind == "thumb":
+                        update = {"thumb_storage_provider": res["provider"], "thumb_bucket": res["bucket"],
+                                  "thumb_path": res["path"], "thumb_url": res["public_url"], "watermark_url": p.get("preview_url")}
+                    elif kind == "preview":
+                        update = {"preview_storage_provider": res["provider"], "preview_bucket": res["bucket"],
+                                  "preview_path": res["path"], "preview_url": res["public_url"], "watermark_url": res["public_url"]}
+                    elif kind == "original":
+                        update = {"original_storage_provider": res["provider"], "original_bucket": res["bucket"], "original_path": res["path"]}
+
+                    update["storage_migration_status"] = "migrated"
+                    update["storage_migrated_at"] = datetime.now(timezone.utc).isoformat()
+                    supabase.table("photos").update(update).eq("id", p["id"]).execute()
+                    moved[kind] += 1
+                except Exception as e:
+                    errors.append(f"{p['id'][:8]}/{kind}: {e}")
+
+        try:
+            supabase.table("admin_audit_logs").insert({
+                "admin_email": data.admin_email, "action": "storage_migrate",
+                "target_type": "event", "target_id": data.event_id,
+                "meta": {"target": data.target_provider, "kinds": data.kinds, "moved": moved},
+            }).execute()
+        except Exception:
+            pass
+
+        return {"dry_run": False, "moved": moved, "errors": errors[:20]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/admin/storage/verify")
+async def admin_storage_verify(request: Request):
+    """Verify migrated files exist on their recorded provider before any deletion."""
+    try:
+        body = await request.json()
+        event_id = body.get("event_id")
+        photos = supabase.table("photos").select("id, thumb_path, thumb_storage_provider, thumb_bucket").eq("event_id", event_id).eq("storage_migration_status", "migrated").execute().data or []
+        ok = missing = 0
+        for p in photos:
+            prov = get_provider_by_name(supabase, p.get("thumb_storage_provider"), p.get("thumb_bucket"))
+            if p.get("thumb_path") and prov.object_exists(p["thumb_path"]):
+                supabase.table("photos").update({"storage_migration_status": "verified"}).eq("id", p["id"]).execute()
+                ok += 1
+            else:
+                missing += 1
+        return {"verified": ok, "missing": missing, "total": len(photos)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/admin/storage/rollback")
+async def admin_storage_rollback(request: Request):
+    """Roll a migrated event's metadata back to Supabase (files stay; just repoint)."""
+    try:
+        body = await request.json()
+        event_id = body.get("event_id")
+        photos = supabase.table("photos").select("id, storage_path").eq("event_id", event_id).execute().data or []
+        for p in photos:
+            base = p.get("storage_path", "")
+            supabase.table("photos").update({
+                "thumb_storage_provider": "supabase", "thumb_bucket": "event-photos",
+                "preview_storage_provider": "supabase", "preview_bucket": "event-photos",
+                "storage_migration_status": "rolled_back",
+            }).eq("id", p["id"]).execute()
+        try:
+            supabase.table("admin_audit_logs").insert({
+                "admin_email": body.get("admin_email", ""), "action": "storage_rollback",
+                "target_type": "event", "target_id": event_id,
+            }).execute()
+        except Exception:
+            pass
+        return {"ok": True, "rolled_back": len(photos)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/download/{purchase_id}")

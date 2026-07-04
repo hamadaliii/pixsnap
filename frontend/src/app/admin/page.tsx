@@ -7,7 +7,7 @@ import { createClient } from '@/lib/supabase/client'
 const ADMIN_EMAIL = process.env.NEXT_PUBLIC_ADMIN_EMAIL ?? 'ahmadlarin14@gmail.com'
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000'
 
-type Tab = 'overview' | 'events' | 'photos' | 'ai' | 'egress' | 'plans' | 'email' | 'payments' | 'security' | 'settings'
+type Tab = 'overview' | 'events' | 'photos' | 'ai' | 'egress' | 'storage' | 'plans' | 'email' | 'payments' | 'security' | 'settings'
 
 function fmtBytes(b: number): string {
   if (!b) return '0 B'
@@ -40,6 +40,9 @@ export default function SuperAdminPage() {
   const [photographers, setPhotographers] = useState<any[]>([])
   const [emailStatus, setEmailStatus] = useState<any>(null)
   const [testEmail, setTestEmail] = useState('')
+  const [storageData, setStorageData] = useState<any>(null)
+  const [migrateTarget, setMigrateTarget] = useState<Record<string,string>>({})
+  const [migrating, setMigrating] = useState<string | null>(null)
 
   function showToast(m: string) { setToast(m); setTimeout(() => setToast(''), 3000) }
 
@@ -89,6 +92,8 @@ export default function SuperAdminPage() {
       ])
       if (pr.ok) setPhotographers((await pr.json()).photographers ?? [])
       if (er.ok) setEmailStatus(await er.json())
+      const sr = await fetch(`${API_URL}/admin/storage/overview`)
+      if (sr.ok) setStorageData(await sr.json())
     } catch { /* ignore */ }
   }, [supabase])
 
@@ -195,12 +200,48 @@ export default function SuperAdminPage() {
     await loadAll()
   }
 
+  async function storageMigrate(eventId: string, target: string, dryRun: boolean) {
+    if (!target) { showToast('Välj en provider'); return }
+    if (!dryRun && !confirm(`Migrera thumbnails + previews för detta event till ${target}? Källfilerna behålls tills du verifierat.`)) return
+    setMigrating(eventId)
+    try {
+      const r = await fetch(`${API_URL}/admin/storage/migrate`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ event_id: eventId, target_provider: target, kinds: ['thumb', 'preview'], dry_run: dryRun, admin_email: ADMIN_EMAIL }),
+      })
+      const d = await r.json()
+      if (dryRun) showToast(`Dry run: skulle flytta ${d.would_move ?? 0} filer`)
+      else { showToast(`Flyttat thumb:${d.moved?.thumb ?? 0} preview:${d.moved?.preview ?? 0}`); await loadAll() }
+    } catch { showToast('Migration misslyckades') }
+    finally { setMigrating(null) }
+  }
+  async function storageVerify(eventId: string) {
+    const r = await fetch(`${API_URL}/admin/storage/verify`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event_id: eventId }),
+    })
+    const d = await r.json()
+    showToast(`Verifierat ${d.verified ?? 0}/${d.total ?? 0}, saknas ${d.missing ?? 0}`)
+    await loadAll()
+  }
+  async function storageRollback(eventId: string) {
+    if (!confirm('Rulla tillbaka detta events storage-metadata till Supabase?')) return
+    const r = await fetch(`${API_URL}/admin/storage/rollback`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event_id: eventId, admin_email: ADMIN_EMAIL }),
+    })
+    const d = await r.json()
+    showToast(`Återställt ${d.rolled_back ?? 0} foton till Supabase`)
+    await loadAll()
+  }
+
   const TABS: [Tab, string][] = [
     ['overview', 'Översikt'],
     ['events', 'Events'],
     ['photos', 'Foton'],
     ['ai', 'AI / Rekognition'],
     ['egress', 'Egress & Storage'],
+    ['storage', 'Storage-providers'],
     ['plans', 'Planer'],
     ['email', 'Email'],
     ['payments', 'Intäkter'],
@@ -500,6 +541,70 @@ export default function SuperAdminPage() {
                 ))}
               </div>
             )}
+          </div>
+        )}
+
+        {/* ── STORAGE-PROVIDERS ── */}
+        {tab === 'storage' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            {/* Provider config status */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>
+              {['supabase', 'r2', 's3'].map(prov => {
+                const configured = storageData?.configured?.[prov]
+                const bytes = storageData?.provider_totals?.[prov] ?? 0
+                const isCurrent = storageData?.current_provider === prov
+                return (
+                  <div key={prov} style={{ background: 'var(--surface)', border: `1px solid ${isCurrent ? 'rgba(91,99,241,0.3)' : '#EAEDF4'}`, borderRadius: 16, padding: '16px 18px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                      <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-1)', textTransform: 'uppercase' }}>{prov}</span>
+                      {isCurrent && <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 9999, background: 'rgba(91,99,241,0.1)', color: 'var(--brand)' }}>AKTIV</span>}
+                    </div>
+                    <div style={{ fontSize: 20, fontWeight: 900, color: 'var(--text-1)' }}>{fmtBytes(bytes)}</div>
+                    <div style={{ fontSize: 11, color: configured ? 'var(--success)' : 'var(--text-3)', marginTop: 4 }}>{configured ? 'Konfigurerad' : 'Ej konfigurerad'}</div>
+                  </div>
+                )
+              })}
+            </div>
+
+            <div style={{ background: 'rgba(91,99,241,0.05)', border: '1px solid rgba(91,99,241,0.15)', borderRadius: 12, padding: '12px 16px', fontSize: 12, color: 'var(--text-2)', lineHeight: 1.6 }}>
+              Nya uppladdningar hamnar hos <strong>{storageData?.current_provider ?? 'supabase'}</strong> (styrs av STORAGE_PROVIDER i backend). Migrera befintliga events nedan. Källfiler i Supabase raderas aldrig automatiskt — verifiera först, rulla tillbaka vid behov.
+            </div>
+
+            {/* Per-event storage + migration */}
+            <div style={{ background: 'var(--surface)', border: '1px solid #EAEDF4', borderRadius: 16, overflow: 'hidden' }}>
+              <div style={{ padding: '14px 20px', borderBottom: '1px solid #EAEDF4' }}>
+                <p style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-1)' }}>Storage per event</p>
+              </div>
+              {(storageData?.events ?? []).length === 0 && <p style={{ padding: '24px 20px', textAlign: 'center', fontSize: 13, color: 'var(--text-3)' }}>Ingen storage-data ännu</p>}
+              {(storageData?.events ?? []).map((ev: any) => {
+                const served = (ev.thumb_bytes ?? 0) + (ev.preview_bytes ?? 0)
+                return (
+                  <div key={ev.event_id} style={{ padding: '14px 20px', borderBottom: '1px solid #F2F4FA' }}>
+                    <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+                      <div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
+                          <p style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-1)' }}>{ev.event_name}</p>
+                          <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 9999, background: 'rgba(0,0,0,0.05)', color: 'var(--text-2)', textTransform: 'uppercase' }}>{ev.thumb_provider ?? 'supabase'}</span>
+                        </div>
+                        <p style={{ fontSize: 11, color: 'var(--text-3)' }}>{ev.photo_count} foton · thumb+preview {fmtBytes(served)} · original {fmtBytes(ev.original_bytes ?? 0)}</p>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                        <select value={migrateTarget[ev.event_id] ?? ''} onChange={e => setMigrateTarget(m => ({ ...m, [ev.event_id]: e.target.value }))} style={{ fontSize: 12, padding: '6px 8px', borderRadius: 8, border: '1px solid #EAEDF4', background: 'var(--surface)', cursor: 'pointer' }}>
+                          <option value="">Välj mål…</option>
+                          {storageData?.configured?.r2 && <option value="r2">R2</option>}
+                          {storageData?.configured?.s3 && <option value="s3">S3</option>}
+                          <option value="supabase">Supabase</option>
+                        </select>
+                        <button onClick={() => storageMigrate(ev.event_id, migrateTarget[ev.event_id], true)} disabled={migrating === ev.event_id} style={{ fontSize: 12, fontWeight: 600, padding: '6px 10px', borderRadius: 8, border: '1px solid #EAEDF4', background: 'var(--surface)', cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}>Dry run</button>
+                        <button onClick={() => storageMigrate(ev.event_id, migrateTarget[ev.event_id], false)} disabled={migrating === ev.event_id} style={{ fontSize: 12, fontWeight: 600, padding: '6px 10px', borderRadius: 8, border: '1px solid rgba(91,99,241,0.2)', color: 'var(--brand)', background: 'rgba(91,99,241,0.06)', cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}>{migrating === ev.event_id ? '…' : 'Migrera'}</button>
+                        <button onClick={() => storageVerify(ev.event_id)} style={{ fontSize: 12, fontWeight: 600, padding: '6px 10px', borderRadius: 8, border: '1px solid rgba(34,197,94,0.2)', color: '#16a34a', background: 'rgba(34,197,94,0.06)', cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}>Verifiera</button>
+                        <button onClick={() => storageRollback(ev.event_id)} style={{ fontSize: 12, fontWeight: 600, padding: '6px 10px', borderRadius: 8, border: '1px solid rgba(245,158,11,0.2)', color: '#B45309', background: 'rgba(245,158,11,0.06)', cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}>Rollback</button>
+                      </div>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
           </div>
         )}
 
