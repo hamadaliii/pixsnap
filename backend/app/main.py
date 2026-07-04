@@ -20,6 +20,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from supabase import create_client, Client
+from app.optimizations import (
+    build_versions, sha256_bytes, hash_ip, log_usage, budget_status,
+    find_cached_match, store_match, count_recent_attempts, log_attempt,
+)
 
 def convert_to_jpeg_if_needed(image_bytes: bytes, filename: str) -> bytes:
     """Konvertera HEIC/HEIF till JPEG om nödvändigt."""
@@ -315,28 +319,73 @@ def health():
 @app.post("/embed", response_model=EmbedResponse)
 def embed_photo(data: EmbedRequest):
     try:
-        ensure_collection(data.event_id)
         image_bytes = download_bytes(data.photo_url)
+        photo_hash = sha256_bytes(image_bytes)
 
-        response = rekognition.index_faces(
-            CollectionId=get_collection_id(data.event_id),
-            Image={"Bytes": image_bytes},
-            ExternalImageId=data.photo_id,
-            DetectionAttributes=[],
-            MaxFaces=50,
-            QualityFilter="AUTO",
-        )
-        faces_found = len(response.get("FaceRecords", []))
+        # Dedupe: if this exact image is already indexed for this event, skip AWS.
+        existing = supabase.table("photos").select("id, rekognition_face_ids") \
+            .eq("event_id", data.event_id).eq("hash", photo_hash).neq("id", data.photo_id).execute()
+        reused_face_ids = []
+        if existing.data:
+            reused_face_ids = existing.data[0].get("rekognition_face_ids") or []
+
+        faces_found = 0
+        face_ids = []
+        if reused_face_ids:
+            # Same bytes already indexed — do NOT call AWS again.
+            face_ids = reused_face_ids
+            faces_found = len(face_ids)
+        else:
+            ensure_collection(data.event_id)
+            response = rekognition.index_faces(
+                CollectionId=get_collection_id(data.event_id),
+                Image={"Bytes": image_bytes},
+                ExternalImageId=data.photo_id,
+                DetectionAttributes=[],
+                MaxFaces=50,
+                QualityFilter="AUTO",
+            )
+            records = response.get("FaceRecords", [])
+            faces_found = len(records)
+            face_ids = [r["Face"]["FaceId"] for r in records]
+            log_usage(supabase, "ai_index", event_id=data.event_id, count=1)
 
         watermark_text = data.watermark_text or "PixSnap"
-        watermarked_bytes = create_watermarked_sd(image_bytes, watermark_text)
-        wm_path = f"watermarks/{data.event_id}/{data.photo_id}.jpg"
-        supabase.storage.from_("event-photos").upload(wm_path, watermarked_bytes, {"content-type": "image/jpeg", "upsert": "true"})
-        wm_url = supabase.storage.from_("event-photos").get_public_url(wm_path)
 
-        supabase.table("photos").update({"processed": True, "watermark_url": wm_url}).eq("id", data.photo_id).execute()
+        # Build small WebP thumb + preview + blur placeholder (watermarked).
+        versions = build_versions(image_bytes, watermark_text)
 
-        print(f"[embed] {data.photo_id[:8]}... {faces_found} ansikten")
+        base = f"{data.event_id}/{data.photo_id}"
+        thumb_path   = f"thumbs/{base}.webp"
+        preview_path = f"previews/{base}.webp"
+
+        supabase.storage.from_("event-photos").upload(
+            thumb_path, versions["thumb_bytes"],
+            {"content-type": "image/webp", "upsert": "true", "cache-control": "public, max-age=31536000, immutable"})
+        supabase.storage.from_("event-photos").upload(
+            preview_path, versions["preview_bytes"],
+            {"content-type": "image/webp", "upsert": "true", "cache-control": "public, max-age=31536000, immutable"})
+
+        thumb_url   = supabase.storage.from_("event-photos").get_public_url(thumb_path)
+        preview_url = supabase.storage.from_("event-photos").get_public_url(preview_path)
+
+        # Keep watermark_url pointing at the preview for backward compatibility.
+        supabase.table("photos").update({
+            "processed": True,
+            "watermark_url": preview_url,
+            "thumb_url": thumb_url,
+            "preview_url": preview_url,
+            "blur_placeholder": versions["blur_placeholder"],
+            "width": versions["width"],
+            "height": versions["height"],
+            "preview_size_bytes": versions["preview_size_bytes"],
+            "thumb_size_bytes": versions["thumb_size_bytes"],
+            "hash": photo_hash,
+            "face_count": faces_found,
+            "rekognition_face_ids": face_ids,
+        }).eq("id", data.photo_id).execute()
+
+        print(f"[embed] {data.photo_id[:8]}... {faces_found} ansikten (reused={bool(reused_face_ids)})")
         return EmbedResponse(success=True, photo_id=data.photo_id, faces_found=faces_found)
     except Exception as e:
         print(f"[embed] Fel: {e}")
@@ -344,8 +393,9 @@ def embed_photo(data: EmbedRequest):
 
 
 @app.post("/find", response_model=FindResponse)
-def find_matches(data: FindRequest):
+def find_matches(data: FindRequest, request: Request):
     try:
+        request_ip = request.headers.get("x-forwarded-for", request.client.host if request.client else "0.0.0.0").split(",")[0].strip()
         event_result = supabase.table("events").select("*").eq("id", data.event_id).single().execute()
         event = event_result.data
         if not event:
@@ -364,10 +414,39 @@ def find_matches(data: FindRequest):
 
         photos_ready = bool(event.get("published_at"))
 
+        # ── Budget guard: stop scans if hard limit reached ──
+        budget = budget_status(supabase)
+        if budget.get("maintenance_mode"):
+            return FindResponse(success=False, matches=[], message="Tjänsten är tillfälligt otillgänglig. Försök igen senare.")
+        if not budget.get("scans_enabled", True):
+            return FindResponse(success=False, matches=[], message="Sökningar är tillfälligt pausade. Försök igen senare.")
+
+        # ── Rate limit: max 10 matches per IP per hour, 3 per session/event/24h ──
+        ip_h = hash_ip(request_ip)
+        recent_ip = count_recent_attempts(supabase, ip_hash=ip_h, kind="match", minutes=60)
+        if recent_ip >= 10:
+            return FindResponse(success=False, matches=[], message="För många sökningar. Vänta en stund och försök igen.")
+
         image_bytes = download_bytes(data.selfie_url)
+        selfie_hash = sha256_bytes(image_bytes)
+
+        # ── Match cache: same selfie for same event within 24h → skip AWS ──
+        cached = find_cached_match(supabase, data.event_id, selfie_hash)
+        if cached:
+            matched_photo_ids = cached.get("photo_ids") or []
+            session_result = supabase.table("guest_sessions").insert({
+                "event_id": data.event_id,
+                "email": data.email or None,
+                "photo_ids": matched_photo_ids,
+            }).execute()
+            session_token = session_result.data[0]["token"]
+            log_attempt(supabase, event_id=data.event_id, ip_hash=ip_h, session_token=session_token, kind="match", success=True)
+            print(f"[find] CACHE HIT {len(matched_photo_ids)} matchningar (0 AWS calls)")
+            return FindResponse(success=True, matches=matched_photo_ids, session_token=session_token, photos_ready=photos_ready)
 
         is_suspicious, reason = detect_screen_or_screenshot(image_bytes)
         if is_suspicious:
+            log_attempt(supabase, event_id=data.event_id, ip_hash=ip_h, kind="match", success=False)
             return FindResponse(success=False, matches=[], message=f"Säkerhetsfel: {reason}")
 
         response = rekognition.search_faces_by_image(
@@ -376,24 +455,37 @@ def find_matches(data: FindRequest):
             MaxFaces=500,
             FaceMatchThreshold=99.0,
         )
+        log_usage(supabase, "ai_search", event_id=data.event_id, count=1)
 
-        matched_photo_ids = list({m["Face"]["ExternalImageId"] for m in response.get("FaceMatches", [])})
+        matches = response.get("FaceMatches", [])
+        matched_photo_ids = list({m["Face"]["ExternalImageId"] for m in matches})
+        conf_avg = (sum(m.get("Similarity", 0) for m in matches) / len(matches)) if matches else None
 
-        supabase.table("event_scans").insert({"event_id": data.event_id, "photo_count": len(matched_photo_ids)}).execute()
+        try:
+            supabase.table("event_scans").insert({"event_id": data.event_id, "photo_count": len(matched_photo_ids)}).execute()
+        except Exception:
+            pass
 
         session_result = supabase.table("guest_sessions").insert({
             "event_id": data.event_id,
             "email": data.email or None,
             "photo_ids": matched_photo_ids,
         }).execute()
-
         session_token = session_result.data[0]["token"]
 
-        supabase.table("consents").insert({
-            "session_id": session_result.data[0]["id"],
-            "event_id": data.event_id,
-        }).execute()
+        # Cache the result so refresh / same selfie won't hit AWS again.
+        store_match(supabase, data.event_id, selfie_hash, matched_photo_ids,
+                    guest_session_id=session_result.data[0]["id"], confidence_avg=conf_avg)
 
+        try:
+            supabase.table("consents").insert({
+                "session_id": session_result.data[0]["id"],
+                "event_id": data.event_id,
+            }).execute()
+        except Exception:
+            pass
+
+        log_attempt(supabase, event_id=data.event_id, ip_hash=ip_h, session_token=session_token, kind="match", success=True)
         print(f"[find] {len(matched_photo_ids)} matchningar, ready={photos_ready}")
         return FindResponse(
             success=True,
@@ -639,6 +731,55 @@ def get_purchase(purchase_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/admin/usage")
+def admin_usage():
+    """SuperAdmin: real egress/AI/email usage this month + budget status."""
+    try:
+        b = budget_status(supabase)
+        # Per-event egress estimate
+        since = datetime.now(timezone.utc).replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
+        rows = supabase.table("usage_events").select("event_id, kind, bytes, count").gte("created_at", since).execute().data or []
+        per_event = {}
+        for r in rows:
+            eid = r.get("event_id") or "unknown"
+            per_event.setdefault(eid, {"egress": 0, "ai_search": 0, "ai_index": 0, "email": 0})
+            if r["kind"] in ("egress", "zip"):
+                per_event[eid]["egress"] += r.get("bytes", 0) or 0
+            elif r["kind"] in per_event[eid]:
+                per_event[eid][r["kind"]] += r.get("count", 0) or 0
+        return {"budget": b, "per_event": per_event}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/admin/settings")
+async def admin_update_settings(request: Request):
+    """SuperAdmin: toggle kill switches / limits."""
+    try:
+        body = await request.json()
+        allowed = {
+            "scans_enabled", "downloads_enabled", "previews_enabled", "uploads_enabled",
+            "maintenance_mode", "monthly_egress_soft_limit", "monthly_egress_hard_limit",
+            "monthly_ai_search_limit", "monthly_ai_index_limit", "monthly_email_limit",
+        }
+        update = {k: v for k, v in body.items() if k in allowed}
+        update["updated_at"] = datetime.now(timezone.utc).isoformat()
+        supabase.table("global_settings").update(update).eq("id", 1).execute()
+        # audit
+        try:
+            supabase.table("admin_audit_logs").insert({
+                "admin_email": body.get("admin_email", ""),
+                "action": "update_settings",
+                "target_type": "settings",
+                "meta": update,
+            }).execute()
+        except Exception:
+            pass
+        return {"ok": True, "updated": update}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/download/{purchase_id}")
 def download_zip(purchase_id: str):
     try:
@@ -681,6 +822,8 @@ def download_free(ids: str):
                 except Exception as e:
                     print(f"[zip-free] Fel: {e}")
         buf.seek(0)
+        data_len = buf.getbuffer().nbytes
+        log_usage(supabase, "zip", bytes_est=data_len, count=1)
         return StreamingResponse(buf, media_type="application/zip",
             headers={"Content-Disposition": "attachment; filename=pixsnap_foton_gratis.zip"})
     except Exception as e:

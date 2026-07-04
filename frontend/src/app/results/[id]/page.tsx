@@ -7,7 +7,7 @@ import { PS_LOGO } from '@/components/layout/Navbar'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? process.env.NEXT_PUBLIC_PYTHON_SERVICE_URL ?? 'http://localhost:8000'
 
-interface Photo { id: string; public_url: string; watermark_url: string | null }
+interface Photo { id: string; public_url: string; watermark_url: string | null; thumb_url: string | null; preview_url: string | null; blur_placeholder: string | null; width: number | null; height: number | null }
 interface Ev { slug: string; name: string; price_per_photo_ore: number; package_enabled: boolean; package_price_ore: number; payment_enabled: boolean; watermark_enabled: boolean; browse_all_enabled: boolean }
 
 function getFavs(eid: string): string[] { try { return JSON.parse(localStorage.getItem(`ps_fav_${eid}`) ?? '[]') } catch { return [] } }
@@ -15,10 +15,21 @@ function saveFavs(eid: string, ids: string[]) { try { localStorage.setItem(`ps_f
 
 function isMobile() { return typeof navigator !== 'undefined' && /iPhone|iPad|Android/i.test(navigator.userAgent) }
 
-/** Best URL to display: watermark_url is always JPEG (never HEIC) */
-function dispUrl(photo: Photo, payEnabled: boolean, wmEnabled: boolean) {
-  if (!payEnabled || !wmEnabled) return photo.public_url
-  return photo.watermark_url ?? photo.public_url
+/** Grid: smallest watermarked WebP thumbnail. Never the original. */
+function gridUrl(photo: Photo, payEnabled: boolean, wmEnabled: boolean) {
+  // If payment is off AND watermark off, the photographer gives originals away —
+  // but we STILL prefer the small thumb in the grid to save egress; the full
+  // file is only fetched on explicit download.
+  return photo.thumb_url ?? photo.watermark_url ?? photo.public_url
+}
+/** Lightbox: mid-size watermarked WebP preview. Never the original. */
+function previewUrl(photo: Photo, payEnabled: boolean, wmEnabled: boolean) {
+  return photo.preview_url ?? photo.watermark_url ?? photo.public_url
+}
+/** Download URL: original only when payment is off; otherwise watermarked preview. */
+function downloadUrl(photo: Photo, payEnabled: boolean, wmEnabled: boolean) {
+  if (!payEnabled) return photo.public_url
+  return photo.preview_url ?? photo.watermark_url ?? photo.public_url
 }
 
 function launchConfetti() {
@@ -75,12 +86,12 @@ export default function ResultsPage() {
         if (matchIds) {
           const ids = matchIds.split(',').filter(Boolean)
           if (ids.length) {
-            const { data } = await supabase.from('photos').select('id,public_url,watermark_url').in('id', ids)
+            const { data } = await supabase.from('photos').select('id,public_url,watermark_url,thumb_url,preview_url,blur_placeholder,width,height').in('id', ids)
             setPhotos(data ?? [])
           }
         }
         if (event?.browse_all_enabled) {
-          const { data: all } = await supabase.from('photos').select('id,public_url,watermark_url').eq('event_id', eventId).limit(500)
+          const { data: all } = await supabase.from('photos').select('id,public_url,watermark_url,thumb_url,preview_url,blur_placeholder,width,height').eq('event_id', eventId).limit(500)
           setAllPhotos(all ?? [])
         }
         setFavs(new Set(getFavs(eventId)))
@@ -302,13 +313,15 @@ export default function ResultsPage() {
                   const isSel = selected.has(photo.id)
                   const isFav = favs.has(photo.id)
                   return (
-                    <div key={photo.id} style={{ aspectRatio: '1', overflow: 'hidden', cursor: 'pointer', position: 'relative', background: '#F2F4FA' }}
+                    <div key={photo.id} style={{ aspectRatio: '1', overflow: 'hidden', cursor: 'pointer', position: 'relative', background: photo.blur_placeholder ? `center / cover no-repeat url(${photo.blur_placeholder})` : '#F2F4FA' }}
                       onClick={() => setLightbox({ photo, idx })}>
                       <img
-                        src={dispUrl(photo, payEnabled, wmEnabled)}
+                        src={gridUrl(photo, payEnabled, wmEnabled)}
                         alt={`Foto ${idx + 1}`}
+                        loading="lazy"
+                        decoding="async"
                         style={{ width: '100%', height: '100%', objectFit: 'cover', transition: 'transform .25s', display: 'block' }}
-                        onError={e => { (e.currentTarget as HTMLImageElement).src = photo.public_url }}
+                        onError={e => { (e.currentTarget as HTMLImageElement).src = photo.watermark_url ?? photo.public_url }}
                         onMouseEnter={e => (e.currentTarget as HTMLImageElement).style.transform = 'scale(1.04)'}
                         onMouseLeave={e => (e.currentTarget as HTMLImageElement).style.transform = 'scale(1)'}
                       />
@@ -339,7 +352,7 @@ export default function ResultsPage() {
                   {mobile ? (
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, justifyContent: 'flex-end', maxWidth: 170 }}>
                       {photos.slice(0, 5).map((p, i) => (
-                        <a key={p.id} href={dispUrl(p, payEnabled, wmEnabled)} download={`pixsnap_${i + 1}.jpg`} target="_blank" rel="noopener noreferrer"
+                        <a key={p.id} href={downloadUrl(p, payEnabled, wmEnabled)} download={`pixsnap_${i + 1}.jpg`} target="_blank" rel="noopener noreferrer"
                           style={{ fontSize: 10, background: 'var(--grad)', color: 'white', padding: '4px 8px', borderRadius: 7, fontWeight: 700, textDecoration: 'none' }}>
                           #{i + 1}
                         </a>
@@ -398,10 +411,10 @@ export default function ResultsPage() {
               Stäng ✕
             </button>
             <img
-              src={dispUrl(lightbox.photo, payEnabled, wmEnabled)}
+              src={previewUrl(lightbox.photo, payEnabled, wmEnabled)}
               alt="Foto"
               style={{ maxWidth: '88vw', maxHeight: '80vh', borderRadius: 14, objectFit: 'contain', display: 'block' }}
-              onError={e => { (e.currentTarget as HTMLImageElement).src = lightbox.photo.public_url }}
+              onError={e => { (e.currentTarget as HTMLImageElement).src = lightbox.photo.watermark_url ?? lightbox.photo.public_url }}
             />
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 10 }}>
               <button onClick={() => {
@@ -416,7 +429,7 @@ export default function ResultsPage() {
                     <path strokeLinecap="round" strokeLinejoin="round" d="M2.5 4.5a2.5 2.5 0 015 0M12 4.5a2.5 2.5 0 00-4.5-1.5L7 3.5l-.5-.5A2.5 2.5 0 002 5c0 1 .5 2 1.5 3L7 11.5l3.5-3.5c1-1 1.5-2 1.5-3z" />
                   </svg>
                 </button>
-                <a href={dispUrl(lightbox.photo, payEnabled, wmEnabled)} download={`pixsnap_${lightbox.idx + 1}.jpg`} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}
+                <a href={downloadUrl(lightbox.photo, payEnabled, wmEnabled)} download={`pixsnap_${lightbox.idx + 1}.jpg`} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}
                   style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 10, background: 'rgba(255,255,255,0.12)', color: 'white', fontWeight: 600, fontSize: 12, textDecoration: 'none' }}>
                   Ladda ner
                 </a>
