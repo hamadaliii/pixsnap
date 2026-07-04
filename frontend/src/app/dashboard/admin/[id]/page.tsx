@@ -145,7 +145,11 @@ export default function AdminPage() {
           body: JSON.stringify({ photo_id: photoRecord.id, photo_url: publicUrl, event_id: event!.id, watermark_text: watermarkEnabled ? watermarkText : '' }),
         }).catch(console.error)
         newPhotos.push(photoRecord)
-      } catch (err) { console.error((err as Error).message) }
+      } catch (err) {
+        const m = (err as Error).message
+        if (m.includes('PIXSNAP_QUOTA:')) setError(m.split('PIXSNAP_QUOTA:')[1].trim())
+        else console.error(m)
+      }
       finally { done++; setUploadDone(done); setUploadProgress(Math.round((done / acceptedFiles.length) * 100)) }
     }
 

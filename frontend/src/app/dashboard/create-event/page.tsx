@@ -103,7 +103,12 @@ export default function CreateEventPage() {
       description: eventType ? `Typ: ${eventType}${location ? ` · ${location}` : ''}` : (location || null),
     }).select().single()
 
-    if (error) { setError(error.message); setLoading(false) }
+    if (error) {
+      const msg = error.message.includes('PIXSNAP_QUOTA:')
+        ? error.message.split('PIXSNAP_QUOTA:')[1].trim()
+        : error.message
+      setError(msg); setLoading(false)
+    }
     else router.push(`/dashboard/admin/${data.id}`)
   }
 

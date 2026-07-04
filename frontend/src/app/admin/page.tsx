@@ -7,7 +7,7 @@ import { createClient } from '@/lib/supabase/client'
 const ADMIN_EMAIL = process.env.NEXT_PUBLIC_ADMIN_EMAIL ?? 'ahmadlarin14@gmail.com'
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000'
 
-type Tab = 'overview' | 'events' | 'photos' | 'ai' | 'egress' | 'payments' | 'security' | 'settings'
+type Tab = 'overview' | 'events' | 'photos' | 'ai' | 'egress' | 'plans' | 'email' | 'payments' | 'security' | 'settings'
 
 function fmtBytes(b: number): string {
   if (!b) return '0 B'
@@ -37,6 +37,9 @@ export default function SuperAdminPage() {
   const [usage, setUsage] = useState<any>(null)
   const [settings, setSettings] = useState<any>(null)
   const [savingSettings, setSavingSettings] = useState(false)
+  const [photographers, setPhotographers] = useState<any[]>([])
+  const [emailStatus, setEmailStatus] = useState<any>(null)
+  const [testEmail, setTestEmail] = useState('')
 
   function showToast(m: string) { setToast(m); setTimeout(() => setToast(''), 3000) }
 
@@ -78,6 +81,15 @@ export default function SuperAdminPage() {
         setSettings(d.budget ?? null)
       }
     } catch { /* backend cold start — ignore */ }
+    // Phase 2: plans + email status
+    try {
+      const [pr, er] = await Promise.all([
+        fetch(`${API_URL}/admin/plans`),
+        fetch(`${API_URL}/admin/email/status`),
+      ])
+      if (pr.ok) setPhotographers((await pr.json()).photographers ?? [])
+      if (er.ok) setEmailStatus(await er.json())
+    } catch { /* ignore */ }
   }, [supabase])
 
   useEffect(() => {
@@ -145,12 +157,52 @@ export default function SuperAdminPage() {
     finally { setSavingSettings(false) }
   }
 
+  async function setPlan(userId: string, planId: string) {
+    await fetch(`${API_URL}/admin/plan`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: userId, plan_id: planId, admin_email: ADMIN_EMAIL }),
+    })
+    showToast('Plan uppdaterad'); await loadAll()
+  }
+  async function toggleSuspend(userId: string, current: string) {
+    await fetch(`${API_URL}/admin/plan`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: userId, status: current === 'suspended' ? 'active' : 'suspended', admin_email: ADMIN_EMAIL }),
+    })
+    showToast(current === 'suspended' ? 'Konto aktiverat' : 'Konto pausat'); await loadAll()
+  }
+  async function runCleanup() {
+    if (!confirm('Kör cleanup? Raderar selfies äldre än 24h, gamla cache-resultat och inaktiverar utgångna events.')) return
+    showToast('Kör cleanup...')
+    const r = await fetch(`${API_URL}/admin/cleanup`, { method: 'POST' })
+    const d = await r.json()
+    showToast(`Klart: ${d.selfies_deleted ?? 0} selfies, ${d.matches_expired ?? 0} cache, ${d.events_expired ?? 0} events`)
+  }
+  async function sendTestEmail() {
+    if (!testEmail) { showToast('Ange en email'); return }
+    const r = await fetch(`${API_URL}/admin/email/test`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to: testEmail }),
+    })
+    const d = await r.json()
+    showToast(d.ok ? 'Testmail skickat!' : (d.message || 'Kunde inte skicka'))
+    await loadAll()
+  }
+  async function flushEmailQueue() {
+    const r = await fetch(`${API_URL}/admin/email/process`, { method: 'POST' })
+    const d = await r.json()
+    showToast(`Kö: ${d.sent ?? 0} skickade, ${d.failed ?? 0} misslyckade`)
+    await loadAll()
+  }
+
   const TABS: [Tab, string][] = [
     ['overview', 'Översikt'],
     ['events', 'Events'],
     ['photos', 'Foton'],
     ['ai', 'AI / Rekognition'],
     ['egress', 'Egress & Storage'],
+    ['plans', 'Planer'],
+    ['email', 'Email'],
     ['payments', 'Intäkter'],
     ['security', 'Säkerhet'],
     ['settings', 'Inställningar'],
@@ -451,6 +503,87 @@ export default function SuperAdminPage() {
           </div>
         )}
 
+        {/* ── PLANER ── */}
+        {tab === 'plans' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            {photographers.length === 0 && (
+              <div style={{ background: 'var(--surface)', border: '1px solid #EAEDF4', borderRadius: 16, padding: 24, textAlign: 'center', fontSize: 13, color: 'var(--text-3)' }}>
+                Inga fotografer med plan ännu. Planer skapas automatiskt (trial) när en fotograf skapar sitt första event.
+              </div>
+            )}
+            {photographers.map(ph => (
+              <div key={ph.user_id} style={{ background: 'var(--surface)', border: '1px solid #EAEDF4', borderRadius: 16, padding: '16px 20px' }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                      <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-1)', fontFamily: 'monospace' }}>{ph.user_id.slice(0, 12)}…</span>
+                      <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 9999, background: 'rgba(91,99,241,0.1)', color: 'var(--brand)', textTransform: 'uppercase' }}>{ph.plan_id}</span>
+                      {ph.status === 'suspended' && <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 9999, background: 'rgba(239,68,68,0.1)', color: 'var(--danger)' }}>Pausad</span>}
+                    </div>
+                    <p style={{ fontSize: 12, color: 'var(--text-3)' }}>
+                      Sökningar {ph.usage?.scans ?? 0}/{ph.limits?.max_scans_per_month} · Email {ph.usage?.emails ?? 0}/{ph.limits?.max_emails_per_month} · Downloads {ph.usage?.downloads ?? 0}/{ph.limits?.max_downloads_per_month}
+                    </p>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                    <select value={ph.plan_id} onChange={e => setPlan(ph.user_id, e.target.value)} style={{ fontSize: 12, padding: '6px 10px', borderRadius: 8, border: '1px solid #EAEDF4', background: 'var(--surface)', cursor: 'pointer' }}>
+                      <option value="trial">Trial</option>
+                      <option value="starter">Starter</option>
+                      <option value="pro">Pro</option>
+                      <option value="event_pack">Event Pack</option>
+                    </select>
+                    <button onClick={() => toggleSuspend(ph.user_id, ph.status)} style={{ fontSize: 12, fontWeight: 600, padding: '6px 10px', borderRadius: 8, border: `1px solid ${ph.status === 'suspended' ? 'rgba(34,197,94,0.2)' : 'rgba(239,68,68,0.2)'}`, color: ph.status === 'suspended' ? '#16a34a' : 'var(--danger)', background: ph.status === 'suspended' ? 'rgba(34,197,94,0.06)' : 'rgba(239,68,68,0.06)', cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}>
+                      {ph.status === 'suspended' ? 'Aktivera' : 'Pausa'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* ── EMAIL ── */}
+        {tab === 'email' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 680 }}>
+            <div style={{ background: 'var(--surface)', border: '1px solid #EAEDF4', borderRadius: 16, padding: 20 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+                <p style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-1)' }}>Email-status</p>
+                <span style={{ fontSize: 12, fontWeight: 700, color: emailStatus?.configured ? 'var(--success)' : 'var(--danger)' }}>
+                  {emailStatus?.configured ? 'Konfigurerad' : 'Not configured'}
+                </span>
+              </div>
+              {!emailStatus?.configured && (
+                <div style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 10, padding: '10px 14px', fontSize: 12, color: '#DC2626', marginBottom: 14 }}>
+                  SMTP_USER / SMTP_PASSWORD saknas i backend. Mail skickas inte.
+                </div>
+              )}
+              <div style={{ display: 'flex', gap: 16, marginBottom: 16 }}>
+                <div><div style={{ fontSize: 22, fontWeight: 800, color: 'var(--text-1)' }}>{emailStatus?.pending ?? 0}</div><div style={{ fontSize: 11, color: 'var(--text-3)' }}>i kö</div></div>
+                <div><div style={{ fontSize: 22, fontWeight: 800, color: 'var(--danger)' }}>{emailStatus?.failed ?? 0}</div><div style={{ fontSize: 11, color: 'var(--text-3)' }}>misslyckade</div></div>
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <input type="email" value={testEmail} onChange={e => setTestEmail(e.target.value)} placeholder="testmail@exempel.se" style={{ flex: 1, minWidth: 180, padding: '9px 12px', borderRadius: 10, border: '1px solid #EAEDF4', fontSize: 13, fontFamily: 'Inter,sans-serif' }} />
+                <button onClick={sendTestEmail} className="ps-btn ps-btn-primary ps-btn-sm">Skicka testmail</button>
+                <button onClick={flushEmailQueue} style={{ fontSize: 13, fontWeight: 600, padding: '9px 14px', borderRadius: 10, border: '1px solid #EAEDF4', background: 'var(--surface)', cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}>Töm kö</button>
+              </div>
+            </div>
+            <div style={{ background: 'var(--surface)', border: '1px solid #EAEDF4', borderRadius: 16, overflow: 'hidden' }}>
+              <div style={{ padding: '14px 20px', borderBottom: '1px solid #EAEDF4' }}>
+                <p style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-1)' }}>Email-logg</p>
+              </div>
+              {(emailStatus?.logs ?? []).length === 0 && <p style={{ padding: '24px 20px', textAlign: 'center', fontSize: 13, color: 'var(--text-3)' }}>Inga mail loggade</p>}
+              {(emailStatus?.logs ?? []).map((l: any) => (
+                <div key={l.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '9px 20px', borderBottom: '1px solid #F2F4FA' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                    <span style={{ width: 7, height: 7, borderRadius: '50%', background: l.status === 'sent' ? 'var(--success)' : 'var(--danger)', flexShrink: 0 }} />
+                    <span style={{ fontSize: 12, color: 'var(--text-1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{l.to_email}</span>
+                  </div>
+                  <span style={{ fontSize: 11, color: 'var(--text-3)', flexShrink: 0 }}>{l.template ?? '—'}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* ── SETTINGS ── */}
         {tab === 'settings' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 640 }}>
@@ -481,6 +614,9 @@ export default function SuperAdminPage() {
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>SuperAdmin-email</span><span style={{ fontFamily: 'monospace', fontSize: 12 }}>{ADMIN_EMAIL}</span></div>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Egress hard limit</span><span>{fmtBytes(4_800_000_000)}</span></div>
               </div>
+              <button onClick={runCleanup} style={{ marginTop: 16, width: '100%', fontSize: 13, fontWeight: 600, padding: '11px', borderRadius: 10, border: '1px solid rgba(245,158,11,0.25)', background: 'rgba(245,158,11,0.06)', color: '#B45309', cursor: 'pointer', fontFamily: 'Inter,sans-serif' }}>
+                Kör cleanup nu (selfies 24h · cache · utgångna events)
+              </button>
             </div>
           </div>
         )}

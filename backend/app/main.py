@@ -24,6 +24,11 @@ from app.optimizations import (
     build_versions, sha256_bytes, hash_ip, log_usage, budget_status,
     find_cached_match, store_match, count_recent_attempts, log_attempt,
 )
+from app.plans import (
+    get_user_plan, check_quota, increment_counter, event_owner,
+    email_configured, enqueue_email, process_email_queue,
+    webhook_already_processed, mark_webhook_processed, run_cleanup,
+)
 
 def convert_to_jpeg_if_needed(image_bytes: bytes, filename: str) -> bytes:
     """Konvertera HEIC/HEIF till JPEG om nödvändigt."""
@@ -427,6 +432,12 @@ def find_matches(data: FindRequest, request: Request):
         if recent_ip >= 10:
             return FindResponse(success=False, matches=[], message="För många sökningar. Vänta en stund och försök igen.")
 
+        # ── Plan quota: scans per month for the event owner ──
+        owner_id = event.get("created_by")
+        ok_scan, scan_msg = check_quota(supabase, owner_id, "scan")
+        if not ok_scan:
+            return FindResponse(success=False, matches=[], message=scan_msg)
+
         image_bytes = download_bytes(data.selfie_url)
         selfie_hash = sha256_bytes(image_bytes)
 
@@ -456,6 +467,8 @@ def find_matches(data: FindRequest, request: Request):
             FaceMatchThreshold=99.0,
         )
         log_usage(supabase, "ai_search", event_id=data.event_id, count=1)
+        increment_counter(supabase, owner_id, "scans", 1)
+        increment_counter(supabase, owner_id, "ai_matches", 1)
 
         matches = response.get("FaceMatches", [])
         matched_photo_ids = list({m["Face"]["ExternalImageId"] for m in matches})
@@ -705,10 +718,27 @@ async def stripe_webhook(request: Request):
         event = json.loads(payload)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
-    if event["type"] == "checkout.session.completed":
+
+    event_id = event.get("id", "")
+    event_type = event.get("type", "")
+
+    # Idempotency: never process the same Stripe event twice.
+    if event_id and webhook_already_processed(supabase, event_id):
+        return {"ok": True, "duplicate": True}
+
+    purchase_id = None
+    if event_type == "checkout.session.completed":
         purchase_id = event["data"]["object"].get("metadata", {}).get("purchase_id")
         if purchase_id:
-            supabase.table("purchases").update({"status": "paid"}).eq("id", purchase_id).execute()
+            import secrets
+            supabase.table("purchases").update({
+                "status": "paid",
+                "paid_at": datetime.now(timezone.utc).isoformat(),
+                "download_token": secrets.token_urlsafe(24),
+            }).eq("id", purchase_id).execute()
+
+    if event_id:
+        mark_webhook_processed(supabase, event_id, event_type, purchase_id)
     return {"ok": True}
 
 
@@ -780,6 +810,134 @@ async def admin_update_settings(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/admin/plans")
+def admin_plans():
+    """SuperAdmin: all photographers with plan + this-month usage."""
+    try:
+        plans = supabase.table("photographer_plans").select("*").execute().data or []
+        counters = supabase.table("usage_counters").select("*").eq("period", datetime.now(timezone.utc).strftime("%Y-%m")).execute().data or []
+        cmap = {c["user_id"]: c for c in counters}
+        out = []
+        for p in plans:
+            uid = p["user_id"]
+            plan = get_user_plan(supabase, uid)
+            out.append({
+                "user_id": uid,
+                "plan_id": p.get("plan_id"),
+                "status": p.get("status"),
+                "limits": plan["limits"],
+                "usage": cmap.get(uid, {}),
+            })
+        return {"photographers": out}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/admin/plan")
+async def admin_set_plan(request: Request):
+    """SuperAdmin: change a photographer's plan / status, or grant extra quota."""
+    try:
+        body = await request.json()
+        user_id = body.get("user_id")
+        if not user_id:
+            raise HTTPException(status_code=400, detail="user_id krävs")
+
+        if "plan_id" in body or "status" in body:
+            update = {}
+            if "plan_id" in body: update["plan_id"] = body["plan_id"]
+            if "status" in body:  update["status"] = body["status"]
+            update["updated_at"] = datetime.now(timezone.utc).isoformat()
+            # upsert
+            existing = supabase.table("photographer_plans").select("user_id").eq("user_id", user_id).execute().data
+            if existing:
+                supabase.table("photographer_plans").update(update).eq("user_id", user_id).execute()
+            else:
+                supabase.table("photographer_plans").insert({"user_id": user_id, **update}).execute()
+
+        if body.get("grant"):
+            g = body["grant"]
+            supabase.table("admin_overrides").insert({
+                "user_id": user_id,
+                "extra_events": g.get("events", 0),
+                "extra_photos": g.get("photos", 0),
+                "extra_scans": g.get("scans", 0),
+                "extra_emails": g.get("emails", 0),
+                "extra_downloads": g.get("downloads", 0),
+                "note": g.get("note", ""),
+                "created_by": body.get("admin_email", ""),
+            }).execute()
+
+        try:
+            supabase.table("admin_audit_logs").insert({
+                "admin_email": body.get("admin_email", ""),
+                "action": "set_plan", "target_type": "photographer", "target_id": user_id, "meta": body,
+            }).execute()
+        except Exception:
+            pass
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/admin/cleanup")
+def admin_cleanup():
+    """SuperAdmin / cron: run cleanup jobs (selfies 24h, expired events, cache TTL)."""
+    try:
+        summary = run_cleanup(supabase, storage_from=supabase.storage.from_)
+        try:
+            supabase.table("admin_audit_logs").insert({
+                "action": "cleanup", "target_type": "system", "meta": summary,
+            }).execute()
+        except Exception:
+            pass
+        return summary
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/admin/email/process")
+def admin_email_process():
+    """SuperAdmin / cron: flush the email queue with retry/backoff."""
+    try:
+        return process_email_queue(supabase, limit=20)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/admin/email/test")
+async def admin_email_test(request: Request):
+    """SuperAdmin: send a test email to verify SMTP works."""
+    try:
+        body = await request.json()
+        to = body.get("to")
+        if not to:
+            raise HTTPException(status_code=400, detail="to krävs")
+        if not email_configured():
+            return {"ok": False, "message": "Email not configured"}
+        html = '<div style="font-family:sans-serif;padding:24px;"><h2>PixSnap testmail</h2><p>Om du ser detta fungerar SMTP.</p></div>'
+        enqueue_email(supabase, to, "PixSnap testmail", html, template="test")
+        result = process_email_queue(supabase, limit=5)
+        return {"ok": result.get("sent", 0) > 0, "result": result}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/admin/email/status")
+def admin_email_status():
+    """SuperAdmin: email config + queue/log stats."""
+    try:
+        pending = supabase.table("email_queue").select("id", count="exact", head=True).eq("status", "pending").execute().count or 0
+        failed = supabase.table("email_queue").select("id", count="exact", head=True).eq("status", "failed").execute().count or 0
+        logs = supabase.table("email_logs").select("*").order("created_at", desc=True).limit(30).execute().data or []
+        return {"configured": email_configured(), "pending": pending, "failed": failed, "logs": logs}
+    except Exception as e:
+        return {"configured": email_configured(), "pending": 0, "failed": 0, "logs": [], "error": str(e)}
+
+
 @app.get("/download/{purchase_id}")
 def download_zip(purchase_id: str):
     try:
@@ -803,10 +961,54 @@ def download_zip(purchase_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/download-signed/{purchase_id}")
+def download_signed(purchase_id: str, token: str = ""):
+    """
+    Paid download via SHORT-LIVED Supabase signed URLs (originals stay private).
+    Requires the download_token issued at payment time. Returns per-photo signed
+    URLs valid for 5 minutes instead of streaming through the backend.
+    """
+    try:
+        result = supabase.table("purchases").select("*").eq("id", purchase_id).single().execute()
+        pur = result.data
+        if not pur or pur.get("status") != "paid":
+            raise HTTPException(status_code=403, detail="Betalning ej genomförd")
+        # token check (issued in the Stripe webhook)
+        if pur.get("download_token") and token != pur.get("download_token"):
+            raise HTTPException(status_code=403, detail="Ogiltig nedladdningslänk")
+
+        photos = supabase.table("photos").select("id, storage_path, public_url").in_("id", pur["photo_ids"]).execute()
+        urls = []
+        for ph in photos.data:
+            path = ph.get("storage_path")
+            signed = None
+            if path:
+                try:
+                    # 300s = 5 min TTL. Originals live in the public event-photos
+                    # bucket today; signing still yields a short-lived URL.
+                    res = supabase.storage.from_("event-photos").create_signed_url(path, 300)
+                    signed = res.get("signedURL") or res.get("signedUrl")
+                except Exception as e:
+                    print(f"[signed] {e}")
+            urls.append({"id": ph["id"], "url": signed or ph.get("public_url")})
+
+        supabase.table("purchases").update({"downloaded": True}).eq("id", purchase_id).execute()
+        log_usage(supabase, "egress", event_id=None, count=len(urls))
+        return {"ok": True, "expires_in": 300, "photos": urls}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/download-free")
 def download_free(ids: str):
     """Download watermarked photos (free tier)."""
     try:
+        # Budget guard: stop free ZIP if downloads are globally disabled / hard limit.
+        b = budget_status(supabase)
+        if not b.get("downloads_enabled", True):
+            raise HTTPException(status_code=503, detail="Nedladdningar är tillfälligt pausade.")
         photo_ids = [i for i in ids.split(",") if i]
         photos = supabase.table("photos").select("id, watermark_url, public_url").in_("id", photo_ids).execute()
         buf = io.BytesIO()
@@ -881,7 +1083,7 @@ def send_email_route(data: EmailRequest):
         gallery_url = f"{FRONTEND_URL}/session/{data.session_token}"
         supabase.table("guest_sessions").update({"email": data.email}).eq("token", data.session_token).execute()
 
-        event = supabase.table("events").select("name").eq("id", result.data["event_id"]).single().execute()
+        event = supabase.table("events").select("name, created_by").eq("id", result.data["event_id"]).single().execute()
         event_name = event.data["name"] if event.data else "eventet"
 
         html = f"""
@@ -894,8 +1096,16 @@ def send_email_route(data: EmailRequest):
             <p style="color:#999;font-size:12px;margin-top:32px;">Länken gäller i 30 dagar. Din selfie raderas inom 24h.</p>
         </div>
         """
-        send_email_smtp(data.email, f"Dina {photo_count} foton från {event_name}", html)
-        return {"success": True}
+        if not email_configured():
+            return {"success": False, "message": "Email not configured"}
+
+        owner_id = event.data.get("created_by") if event.data else None
+        dedupe = f"gallery:{data.session_token}:{data.email}"
+        enqueue_email(supabase, data.email, f"Dina {photo_count} foton från {event_name}",
+                      html, template="gallery_link", dedupe_key=dedupe, user_id=owner_id)
+        # Try to flush immediately so the guest gets it fast; queue handles retries.
+        process_email_queue(supabase, limit=3)
+        return {"success": True, "queued": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
