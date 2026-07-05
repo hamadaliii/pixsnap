@@ -75,12 +75,14 @@ class SupabaseStorageProvider(StorageProvider):
         self.bucket = bucket
 
     def upload_object(self, path, data, content_type="application/octet-stream",
-                      cache_control="public, max-age=31536000, immutable"):
-        self.sb.storage.from_(self.bucket).upload(
+                      cache_control="public, max-age=31536000, immutable", visibility="public"):
+        bucket = "originals" if visibility == "private" else self.bucket
+        self.sb.storage.from_(bucket).upload(
             path, data,
             {"content-type": content_type, "upsert": "true", "cache-control": cache_control},
         )
-        return self.result(path)
+        pub = None if visibility == "private" else self.sb.storage.from_(bucket).get_public_url(path)
+        return StorageResult(provider=self.name, bucket=bucket, path=path, public_url=pub, visibility=visibility)
 
     def download_object(self, path):
         return self.sb.storage.from_(self.bucket).download(path)
@@ -134,10 +136,18 @@ class SupabaseStorageProvider(StorageProvider):
 
 # ── S3-compatible base (used by both R2 and S3) ─────────────────────────────
 class _S3CompatibleProvider(StorageProvider):
+    """
+    S3-compatible provider with PUBLIC + PRIVATE bucket separation.
+    - public bucket: watermarked thumbnails/previews (safe to expose)
+    - private bucket: originals, selfies, ZIPs, temp (signed URLs only)
+    `visibility` on each call routes to the right bucket. Defaults to public.
+    """
     def __init__(self, *, endpoint_url, region, access_key, secret_key,
-                 bucket, public_base_url=None, name="s3"):
+                 public_bucket, private_bucket=None, public_base_url=None, name="s3"):
         self.name = name
-        self.bucket = bucket
+        self.public_bucket = public_bucket
+        self.private_bucket = private_bucket or public_bucket
+        self.bucket = public_bucket  # default/legacy attribute
         self.public_base_url = (public_base_url or "").rstrip("/")
         self.client = boto3.client(
             "s3",
@@ -148,58 +158,62 @@ class _S3CompatibleProvider(StorageProvider):
             config=BotoConfig(signature_version="s3v4", s3={"addressing_style": "path"}),
         )
 
-    def upload_object(self, path, data, content_type="application/octet-stream",
-                      cache_control="public, max-age=31536000, immutable"):
-        self.client.put_object(
-            Bucket=self.bucket, Key=path, Body=data,
-            ContentType=content_type, CacheControl=cache_control,
-        )
-        return self.result(path)
+    def _bucket_for(self, visibility):
+        return self.private_bucket if visibility == "private" else self.public_bucket
 
-    def download_object(self, path):
-        obj = self.client.get_object(Bucket=self.bucket, Key=path)
+    def upload_object(self, path, data, content_type="application/octet-stream",
+                      cache_control="public, max-age=31536000, immutable", visibility="public"):
+        bucket = self._bucket_for(visibility)
+        self.client.put_object(Bucket=bucket, Key=path, Body=data,
+                               ContentType=content_type, CacheControl=cache_control)
+        public_url = None
+        if visibility == "public":
+            public_url = f"{self.public_base_url}/{path}" if self.public_base_url else (self.get_signed_url(path, 3600, visibility="public") or "")
+        else:
+            public_url = self.get_signed_url(path, 300, visibility="private")
+        return StorageResult(provider=self.name, bucket=bucket, path=path, public_url=public_url, visibility=visibility)
+
+    def download_object(self, path, visibility="public"):
+        obj = self.client.get_object(Bucket=self._bucket_for(visibility), Key=path)
         return obj["Body"].read()
 
-    def get_signed_url(self, path, expires_in=300):
+    def get_signed_url(self, path, expires_in=300, visibility="private"):
         try:
             return self.client.generate_presigned_url(
-                "get_object", Params={"Bucket": self.bucket, "Key": path}, ExpiresIn=expires_in
-            )
+                "get_object", Params={"Bucket": self._bucket_for(visibility), "Key": path}, ExpiresIn=expires_in)
         except Exception:
             return None
 
-    def delete_object(self, path):
+    def delete_object(self, path, visibility="public"):
         try:
-            self.client.delete_object(Bucket=self.bucket, Key=path)
+            self.client.delete_object(Bucket=self._bucket_for(visibility), Key=path)
             return True
         except Exception:
             return False
 
-    def object_exists(self, path):
+    def object_exists(self, path, visibility="public"):
         try:
-            self.client.head_object(Bucket=self.bucket, Key=path)
+            self.client.head_object(Bucket=self._bucket_for(visibility), Key=path)
             return True
         except Exception:
             return False
 
-    def list_objects(self, prefix=""):
+    def list_objects(self, prefix="", visibility="public"):
         try:
-            resp = self.client.list_objects_v2(Bucket=self.bucket, Prefix=prefix)
+            resp = self.client.list_objects_v2(Bucket=self._bucket_for(visibility), Prefix=prefix)
             return [{"name": o["Key"], "size": o["Size"], "created_at": o["LastModified"].isoformat()}
                     for o in resp.get("Contents", [])]
         except Exception:
             return []
 
     def get_public_url(self, path):
-        # Only meaningful when a public base URL (e.g. R2 custom domain) is set.
         if self.public_base_url:
             return f"{self.public_base_url}/{path}"
-        # No public base → caller should use signed URLs instead.
-        return self.get_signed_url(path, 3600) or ""
+        return self.get_signed_url(path, 3600, visibility="public") or ""
 
-    def get_metadata(self, path):
+    def get_metadata(self, path, visibility="public"):
         try:
-            h = self.client.head_object(Bucket=self.bucket, Key=path)
+            h = self.client.head_object(Bucket=self._bucket_for(visibility), Key=path)
             return {"size": h.get("ContentLength"), "content_type": h.get("ContentType")}
         except Exception:
             return {}
@@ -209,12 +223,15 @@ class R2StorageProvider(_S3CompatibleProvider):
     def __init__(self):
         account = os.environ.get("R2_ACCOUNT_ID", "")
         endpoint = os.environ.get("R2_ENDPOINT") or (f"https://{account}.r2.cloudflarestorage.com" if account else "")
+        pub = os.environ.get("R2_PUBLIC_BUCKET") or os.environ.get("R2_BUCKET", "")
+        priv = os.environ.get("R2_PRIVATE_BUCKET") or pub
         super().__init__(
             endpoint_url=endpoint,
             region="auto",
             access_key=os.environ.get("R2_ACCESS_KEY_ID", ""),
             secret_key=os.environ.get("R2_SECRET_ACCESS_KEY", ""),
-            bucket=os.environ.get("R2_BUCKET", ""),
+            public_bucket=pub,
+            private_bucket=priv,
             public_base_url=os.environ.get("R2_PUBLIC_BASE_URL", ""),
             name="r2",
         )
@@ -223,12 +240,15 @@ class R2StorageProvider(_S3CompatibleProvider):
 class S3StorageProvider(_S3CompatibleProvider):
     def __init__(self):
         region = os.environ.get("AWS_S3_REGION", "eu-west-1")
+        pub = os.environ.get("AWS_S3_PUBLIC_BUCKET") or os.environ.get("AWS_S3_BUCKET", "")
+        priv = os.environ.get("AWS_S3_PRIVATE_BUCKET") or pub
         super().__init__(
             endpoint_url=None,  # default AWS endpoint
             region=region,
             access_key=os.environ.get("AWS_S3_ACCESS_KEY_ID", ""),
             secret_key=os.environ.get("AWS_S3_SECRET_ACCESS_KEY", ""),
-            bucket=os.environ.get("AWS_S3_BUCKET", ""),
+            public_bucket=pub,
+            private_bucket=priv,
             public_base_url=os.environ.get("AWS_S3_PUBLIC_BASE_URL", ""),
             name="s3",
         )
@@ -237,12 +257,13 @@ class S3StorageProvider(_S3CompatibleProvider):
 # ── Config checks + factory ─────────────────────────────────────────────────
 def _r2_configured() -> bool:
     return bool(os.environ.get("R2_ACCESS_KEY_ID") and os.environ.get("R2_SECRET_ACCESS_KEY")
-                and os.environ.get("R2_BUCKET") and (os.environ.get("R2_ENDPOINT") or os.environ.get("R2_ACCOUNT_ID")))
+                and (os.environ.get("R2_BUCKET") or os.environ.get("R2_PUBLIC_BUCKET"))
+                and (os.environ.get("R2_ENDPOINT") or os.environ.get("R2_ACCOUNT_ID")))
 
 
 def _s3_configured() -> bool:
     return bool(os.environ.get("AWS_S3_ACCESS_KEY_ID") and os.environ.get("AWS_S3_SECRET_ACCESS_KEY")
-                and os.environ.get("AWS_S3_BUCKET"))
+                and (os.environ.get("AWS_S3_BUCKET") or os.environ.get("AWS_S3_PUBLIC_BUCKET")))
 
 
 def provider_configured(name: str) -> bool:

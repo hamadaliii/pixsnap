@@ -28,6 +28,7 @@ from app.plans import (
     get_user_plan, check_quota, increment_counter, event_owner,
     email_configured, enqueue_email, process_email_queue,
     webhook_already_processed, mark_webhook_processed, run_cleanup,
+    has_feature, get_scan_credits, adjust_scan_credits,
 )
 from app.storage import (
     get_storage_provider, get_provider_by_name, provider_configured,
@@ -478,6 +479,9 @@ def find_matches(data: FindRequest, request: Request):
         log_usage(supabase, "ai_search", event_id=data.event_id, count=1)
         increment_counter(supabase, owner_id, "scans", 1)
         increment_counter(supabase, owner_id, "ai_matches", 1)
+        # Consume a scan credit only for real AWS matches (cache hits are free).
+        if owner_id and get_scan_credits(supabase, owner_id) > 0:
+            adjust_scan_credits(supabase, owner_id, -1, "match", event_id=data.event_id)
 
         matches = response.get("FaceMatches", [])
         matched_photo_ids = list({m["Face"]["ExternalImageId"] for m in matches})
@@ -945,6 +949,35 @@ def admin_email_status():
         return {"configured": email_configured(), "pending": pending, "failed": failed, "logs": logs}
     except Exception as e:
         return {"configured": email_configured(), "pending": 0, "failed": 0, "logs": [], "error": str(e)}
+
+
+@app.post("/admin/credits")
+async def admin_grant_credits(request: Request):
+    """SuperAdmin: grant extra scan credits to a photographer."""
+    try:
+        body = await request.json()
+        user_id = body.get("user_id"); amount = int(body.get("amount", 0))
+        if not user_id or amount == 0:
+            raise HTTPException(status_code=400, detail="user_id + amount krävs")
+        new_balance = adjust_scan_credits(supabase, user_id, amount, "admin_grant")
+        try:
+            supabase.table("admin_audit_logs").insert({
+                "admin_email": body.get("admin_email", ""), "action": "grant_credits",
+                "target_type": "photographer", "target_id": user_id, "meta": {"amount": amount, "balance": new_balance},
+            }).execute()
+        except Exception:
+            pass
+        return {"ok": True, "balance": new_balance}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/feature/{user_id}/{feature}")
+def check_feature(user_id: str, feature: str):
+    """Backend feature-gate check (source of truth). Frontend can call this to gate UI."""
+    return {"feature": feature, "enabled": has_feature(supabase, user_id, feature)}
 
 
 @app.get("/admin/storage/overview")

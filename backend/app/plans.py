@@ -137,6 +137,60 @@ def event_owner(supabase, event_id: str) -> Optional[str]:
         return None
 
 
+# ── Feature gates (roadmap: everything gated backend-side) ───────────────────
+
+def has_feature(supabase, user_id: str, feature: str) -> bool:
+    """
+    True if the user's plan enables `feature`, or an admin override unlocks it.
+    Failsafe → False (locked) so premium stays locked if the check errors.
+    """
+    if not user_id:
+        return False
+    try:
+        # admin override wins
+        ov = supabase.table("feature_overrides").select("enabled") \
+            .eq("user_id", user_id).eq("feature", feature).execute().data
+        if ov:
+            return bool(ov[0].get("enabled"))
+        plan = get_user_plan(supabase, user_id)
+        pf = supabase.table("plan_features").select("enabled") \
+            .eq("plan_id", plan["plan_id"]).eq("feature", feature).execute().data
+        if pf:
+            return bool(pf[0].get("enabled"))
+        return False
+    except Exception as e:
+        print(f"[features] has_feature failsafe→False: {e}")
+        return False
+
+
+# ── Scan credits (Phase A) ──────────────────────────────────────────────────
+
+def get_scan_credits(supabase, user_id: str) -> int:
+    try:
+        r = supabase.table("photographer_plans").select("scan_credits").eq("user_id", user_id).single().execute()
+        return (r.data or {}).get("scan_credits", 0) or 0
+    except Exception:
+        return 0
+
+
+def adjust_scan_credits(supabase, user_id: str, delta: int, reason: str, event_id: str = None) -> int:
+    """Add or subtract scan credits, log to the ledger, return new balance. Failsafe."""
+    if not user_id:
+        return 0
+    try:
+        cur = get_scan_credits(supabase, user_id)
+        new = max(0, cur + delta)
+        supabase.table("photographer_plans").update({"scan_credits": new}).eq("user_id", user_id).execute()
+        supabase.table("credit_events").insert({
+            "user_id": user_id, "delta": delta, "reason": reason,
+            "event_id": event_id, "balance_after": new,
+        }).execute()
+        return new
+    except Exception as e:
+        print(f"[credits] adjust fel: {e}")
+        return 0
+
+
 # ── Email queue ─────────────────────────────────────────────────────────────
 
 SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.gmail.com")
