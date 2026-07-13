@@ -248,9 +248,21 @@ export default function ResultsPage() {
                   </button>
                 )}
                 {ev?.slug && (
-                  <Link href={`/event/${ev.slug}`} className="ps-btn ps-btn-secondary ps-btn-sm" style={{ textDecoration: 'none', flex: 1, justifyContent: 'center', minWidth: 110 }}>
+                  <button
+                    onClick={() => {
+                      // Rensa sparad gästsession för detta event så kameran startar om,
+                      // och tvinga en HÅRD omladdning (Link/router.push återanvänder den
+                      // cachade sidan och kameran monteras aldrig om).
+                      try {
+                        localStorage.removeItem(`pixsnap_session_${ev.slug}`)
+                        localStorage.removeItem(`pixsnap_match_${ev.slug}`)
+                      } catch {}
+                      window.location.href = `/event/${ev.slug}?ny=${Date.now()}`
+                    }}
+                    className="ps-btn ps-btn-secondary ps-btn-sm"
+                    style={{ flex: 1, justifyContent: 'center', minWidth: 110 }}>
                     Ny sökning
-                  </Link>
+                  </button>
                 )}
               </div>
 

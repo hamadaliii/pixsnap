@@ -33,6 +33,7 @@ from app.plans import (
 from app.storage import (
     get_storage_provider, get_provider_by_name, provider_configured,
 )
+from app import billing
 
 def convert_to_jpeg_if_needed(image_bytes: bytes, filename: str) -> bytes:
     """Konvertera HEIC/HEIF till JPEG om nödvändigt."""
@@ -407,6 +408,64 @@ def embed_photo(data: EmbedRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/embed-pending/{event_id}")
+def embed_pending(event_id: str):
+    """
+    Indexera alla foton i eventet som inte är processade än.
+    Körs server-side så Render-kallstart eller en tappad fetch från webbläsaren
+    inte lämnar foton oindexerade. Idempotent — hoppar över redan indexerade.
+    """
+    try:
+        ev = supabase.table("events").select("*").eq("id", event_id).single().execute().data
+        if not ev:
+            raise HTTPException(status_code=404, detail="Event hittades inte")
+
+        pending = supabase.table("photos").select("id, public_url, processed") \
+            .eq("event_id", event_id).eq("processed", False).execute().data or []
+
+        wm = (ev.get("watermark_text") or "PixSnap") if ev.get("watermark_enabled", True) else ""
+        done, failed, faces_total = 0, 0, 0
+        errors = []
+
+        for ph in pending:
+            try:
+                result = embed_photo(EmbedRequest(
+                    photo_id=ph["id"], photo_url=ph["public_url"],
+                    event_id=event_id, watermark_text=wm,
+                ))
+                faces_total += result.faces_found
+                done += 1
+            except Exception as e:
+                failed += 1
+                errors.append(f"{ph['id'][:8]}: {str(e)[:120]}")
+
+        print(f"[embed-pending] {done} indexerade, {failed} fel, {faces_total} ansikten")
+        return {"ok": True, "indexed": done, "failed": failed,
+                "faces_found": faces_total, "pending_before": len(pending),
+                "errors": errors[:10]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/keepalive")
+def keepalive():
+    """
+    Håller Supabase vaken (gratisplanen pausar projekt efter 7 dagars inaktivitet)
+    och värmer Render från kallstart. Peka en extern cron mot denna varje 6h.
+    """
+    checks = {}
+    try:
+        supabase.table("events").select("id", count="exact", head=True).limit(1).execute()
+        checks["supabase"] = "ok"
+    except Exception as e:
+        checks["supabase"] = f"error: {str(e)[:80]}"
+    checks["backend"] = "ok"
+    checks["time"] = datetime.now(timezone.utc).isoformat()
+    return checks
+
+
 @app.post("/find", response_model=FindResponse)
 def find_matches(data: FindRequest, request: Request):
     try:
@@ -465,10 +524,9 @@ def find_matches(data: FindRequest, request: Request):
             print(f"[find] CACHE HIT {len(matched_photo_ids)} matchningar (0 AWS calls)")
             return FindResponse(success=True, matches=matched_photo_ids, session_token=session_token, photos_ready=photos_ready)
 
-        is_suspicious, reason = detect_screen_or_screenshot(image_bytes)
-        if is_suspicious:
-            log_attempt(supabase, event_id=data.event_id, ip_hash=ip_h, kind="match", success=False)
-            return FindResponse(success=False, matches=[], message=f"Säkerhetsfel: {reason}")
+        # Spegel-/skärm-/screenshot-detektering avstängd: den blockerade legitima
+        # selfies (glasögon, fönsterreflektioner, bra belysning). Rate limiting +
+        # scan-quota skyddar redan mot missbruk.
 
         response = rekognition.search_faces_by_image(
             CollectionId=get_collection_id(data.event_id),
@@ -741,14 +799,44 @@ async def stripe_webhook(request: Request):
 
     purchase_id = None
     if event_type == "checkout.session.completed":
-        purchase_id = event["data"]["object"].get("metadata", {}).get("purchase_id")
-        if purchase_id:
-            import secrets
-            supabase.table("purchases").update({
-                "status": "paid",
-                "paid_at": datetime.now(timezone.utc).isoformat(),
-                "download_token": secrets.token_urlsafe(24),
-            }).eq("id", purchase_id).execute()
+        obj = event["data"]["object"]
+        meta = obj.get("metadata", {})
+        checkout_type = meta.get("type")
+
+        if checkout_type == "subscription":
+            # Photographer plan upgrade — webhook is the source of truth.
+            billing.apply_subscription_completed(supabase, obj)
+        elif checkout_type == "event_pack":
+            # Event pack purchase — grants quota + scan credits.
+            billing.apply_event_pack_completed(supabase, obj, adjust_scan_credits)
+        else:
+            # Guest photo purchase (existing flow).
+            purchase_id = meta.get("purchase_id")
+            if purchase_id:
+                import secrets
+                supabase.table("purchases").update({
+                    "status": "paid",
+                    "paid_at": datetime.now(timezone.utc).isoformat(),
+                    "download_token": secrets.token_urlsafe(24),
+                }).eq("id", purchase_id).execute()
+
+    elif event_type == "invoice.payment_failed":
+        # Mark subscription past_due so the UI can warn.
+        sub_id = event["data"]["object"].get("subscription")
+        if sub_id:
+            try:
+                supabase.table("photographer_plans").update({"status": "past_due"}).eq("stripe_subscription_id", sub_id).execute()
+            except Exception:
+                pass
+
+    elif event_type == "customer.subscription.deleted":
+        # Downgrade to trial when a subscription ends.
+        sub_id = event["data"]["object"].get("id")
+        if sub_id:
+            try:
+                supabase.table("photographer_plans").update({"plan_id": "trial", "status": "canceled"}).eq("stripe_subscription_id", sub_id).execute()
+            except Exception:
+                pass
 
     if event_id:
         mark_webhook_processed(supabase, event_id, event_type, purchase_id)
@@ -949,6 +1037,86 @@ def admin_email_status():
         return {"configured": email_configured(), "pending": pending, "failed": failed, "logs": logs}
     except Exception as e:
         return {"configured": email_configured(), "pending": 0, "failed": 0, "logs": [], "error": str(e)}
+
+
+class BillingCheckoutRequest(BaseModel):
+    user_id: str
+    plan_id: str
+    email: str = ""
+    coupon: str = ""
+
+
+class EventPackCheckoutRequest(BaseModel):
+    user_id: str
+    pack_id: str
+    event_id: str = ""
+    email: str = ""
+    coupon: str = ""
+
+
+@app.post("/api/billing/create-checkout-session")
+def billing_create_checkout(data: BillingCheckoutRequest):
+    """Start a Stripe subscription checkout to upgrade a photographer's plan."""
+    result = billing.create_subscription_checkout(
+        supabase, data.user_id, data.plan_id, email=data.email or None, coupon=data.coupon or None)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400 if result.get("error") != "stripe_not_configured" else 503,
+                            detail=result.get("message") or result.get("error"))
+    return result
+
+
+@app.post("/api/billing/create-event-pack-checkout")
+def billing_create_pack_checkout(data: EventPackCheckoutRequest):
+    """Start a Stripe one-time checkout to buy an Event Pack."""
+    result = billing.create_event_pack_checkout(
+        supabase, data.user_id, data.pack_id, event_id=data.event_id or None,
+        email=data.email or None, coupon=data.coupon or None)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400 if result.get("error") != "stripe_not_configured" else 503,
+                            detail=result.get("message") or result.get("error"))
+    return result
+
+
+@app.post("/api/billing/create-customer-portal")
+async def billing_portal(request: Request):
+    body = await request.json()
+    result = billing.create_portal(supabase, body.get("user_id"))
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("message") or result.get("error"))
+    return result
+
+
+@app.get("/api/billing/current/{user_id}")
+def billing_current(user_id: str):
+    """Current plan + real usage + active packs for the billing dashboard."""
+    return billing.get_current_billing(supabase, user_id, get_user_plan, get_scan_credits)
+
+
+@app.post("/api/billing/validate-coupon")
+async def billing_validate_coupon(request: Request):
+    body = await request.json()
+    return billing.validate_coupon(supabase, body.get("code", ""),
+                                   plan_id=body.get("plan_id"), pack_id=body.get("pack_id"))
+
+
+@app.get("/api/billing/plans")
+def billing_plans():
+    """Public: all active plans + event packs for the pricing page."""
+    try:
+        plans = supabase.table("plans").select("*").eq("active", True).order("sort_order").execute().data or []
+        limits = supabase.table("plan_limits").select("*").execute().data or []
+        feats = supabase.table("plan_features").select("*").execute().data or []
+        packs = supabase.table("event_packs").select("*").eq("status", "active").order("sort_order").execute().data or []
+        lmap = {l["plan_id"]: l for l in limits}
+        fmap = {}
+        for f in feats:
+            fmap.setdefault(f["plan_id"], {})[f["feature"]] = f["enabled"]
+        for p in plans:
+            p["limits"] = lmap.get(p["id"], {})
+            p["features"] = fmap.get(p["id"], {})
+        return {"plans": plans, "event_packs": packs, "stripe_configured": billing.is_configured()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/admin/credits")

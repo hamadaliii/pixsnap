@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { generateSlug } from '@/lib/utils'
+import UpgradeModal, { UpgradeContext } from '@/components/billing/UpgradeModal'
 
 // 3D camera SVG miniature
 const Camera3D = () => (
@@ -90,6 +91,9 @@ export default function CreateEventPage() {
   const [privacy, setPrivacy] = useState<'open' | 'pin'>('open')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [upgradeCtx, setUpgradeCtx] = useState<UpgradeContext | null>(null)
+  const [uid, setUid] = useState('')
+  const [uemail, setUemail] = useState('')
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault()
@@ -104,10 +108,14 @@ export default function CreateEventPage() {
     }).select().single()
 
     if (error) {
-      const msg = error.message.includes('PIXSNAP_QUOTA:')
-        ? error.message.split('PIXSNAP_QUOTA:')[1].trim()
-        : error.message
-      setError(msg); setLoading(false)
+      setLoading(false)
+      if (error.message.includes('PIXSNAP_QUOTA:')) {
+        const msg = error.message.split('PIXSNAP_QUOTA:')[1].trim()
+        setUid(user.id); setUemail(user.email ?? '')
+        setUpgradeCtx({ reason: msg, limitKey: 'active_events', plan: 'trial', used: 1, limit: 1, recommended: 'starter' })
+      } else {
+        setError(error.message)
+      }
     }
     else router.push(`/dashboard/admin/${data.id}`)
   }
@@ -311,6 +319,7 @@ export default function CreateEventPage() {
           </div>
         </div>
       </div>
+      {upgradeCtx && <UpgradeModal ctx={upgradeCtx} userId={uid} email={uemail} onClose={() => setUpgradeCtx(null)} />}
     </>
   )
 }

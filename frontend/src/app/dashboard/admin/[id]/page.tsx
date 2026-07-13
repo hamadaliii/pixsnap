@@ -68,6 +68,27 @@ export default function AdminPage() {
   const [uploadTotal, setUploadTotal] = useState(0)
   const [uploadDone, setUploadDone] = useState(0)
   const [error, setError] = useState<string | null>(null)
+  const [indexing, setIndexing] = useState(false)
+  const [indexMsg, setIndexMsg] = useState('')
+
+  async function reloadPhotos() {
+    const { data } = await supabase.from('photos').select('*').eq('event_id', id).order('created_at', { ascending: false })
+    setPhotos(data ?? [])
+  }
+
+  async function indexPending() {
+    if (!event) return
+    setIndexing(true); setIndexMsg('')
+    try {
+      const r = await fetch(`${API_URL}/embed-pending/${event.id}`, { method: 'POST' })
+      const d = await r.json()
+      if (r.ok) {
+        setIndexMsg(d.pending_before === 0 ? 'Alla foton är redan indexerade' : `${d.indexed} indexerade, ${d.faces_found} ansikten hittade${d.failed ? ` (${d.failed} fel)` : ''}`)
+        await reloadPhotos()
+      } else setIndexMsg('Indexering misslyckades')
+    } catch { setIndexMsg('Backend svarar inte – vänta 30s och försök igen (Render startar upp)') }
+    finally { setIndexing(false) }
+  }
   const [tab, setTab] = useState<'photos' | 'guests' | 'analytics' | 'settings'>('photos')
   const [stats, setStats] = useState<any>(null)
   const [deleting, setDeleting] = useState(false)
@@ -158,6 +179,19 @@ export default function AdminPage() {
     }
     setPhotos(prev => [...newPhotos.reverse(), ...prev])
     setUploading(false)
+
+    // Server-side safety net: index anything the fire-and-forget /embed missed
+    // (Render cold start can silently drop the first calls).
+    setIndexing(true)
+    try {
+      const r = await fetch(`${API_URL}/embed-pending/${event!.id}`, { method: 'POST' })
+      if (r.ok) {
+        const d = await r.json()
+        setIndexMsg(`${d.indexed} foton indexerade${d.failed ? `, ${d.failed} fel` : ''}`)
+        await reloadPhotos()
+      }
+    } catch { setIndexMsg('Kunde inte indexera – klicka "Indexera foton" för att försöka igen') }
+    finally { setIndexing(false) }
   }, [event, supabase, watermarkText, watermarkEnabled])
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
@@ -366,6 +400,25 @@ export default function AdminPage() {
                     <span style={{display:'flex',alignItems:'center',gap:4}}><div style={{width:8,height:8,borderRadius:'50%',background:'#F59E0B'}}/> Bearbetar</span>
                   </div>
                 </div>
+
+                {/* Obearbetade foton → indexera server-side */}
+                {photos.some(p => !p.processed) && (
+                  <div style={{display:'flex', alignItems:'center', justifyContent:'space-between', gap:12, flexWrap:'wrap', padding:'12px 16px', marginBottom:12, borderRadius:12, background:'rgba(245,158,11,0.07)', border:'1px solid rgba(245,158,11,0.2)'}}>
+                    <div>
+                      <p style={{fontSize:13, fontWeight:600, color:'#B45309'}}>
+                        {photos.filter(p => !p.processed).length} foton är inte indexerade
+                      </p>
+                      <p style={{fontSize:12, color:'var(--text-3)'}}>Gäster kan inte hitta sig själva i dessa foton förrän de indexerats.</p>
+                    </div>
+                    <button onClick={indexPending} disabled={indexing} className="ps-btn ps-btn-primary ps-btn-sm" style={{whiteSpace:'nowrap'}}>
+                      {indexing ? 'Indexerar…' : 'Indexera foton'}
+                    </button>
+                  </div>
+                )}
+                {indexMsg && (
+                  <p style={{fontSize:12, color:'var(--text-3)', marginBottom:12}}>{indexMsg}</p>
+                )}
+
                 <PhotoGrid photos={photos} allowDelete onDelete={handleDelete}/>
               </div>
             )}
